@@ -5,19 +5,24 @@ import subprocess
 from datetime import date, datetime
 from pathlib import Path
 
+from company_research.analysis.sections import analyze_all_sections
 from company_research.config import settings
 from company_research.extraction.facts import SECTION_TOPICS, extract_and_store
 from company_research.identity.edgar import get_company_facts
 from company_research.identity.resolver import resolve
 from company_research.llm.anthropic import AnthropicProvider
 from company_research.llm.prompts import prompt_version
+from company_research.models.evidence import EvidenceFact
 from company_research.models.identity import ResearchRun
 from company_research.models.sources import SourceRecord
 from company_research.parsing.xbrl import extract_metrics
+from company_research.reporting.formatter import write_report
+from company_research.reporting.generator import generate_report
 from company_research.sources.edgar import EdgarAdapter
 from company_research.storage.cache import RawCache
 from company_research.storage.database import Database
 from company_research.storage.export import export_qa, export_run
+from company_research.validation.citations import verify_citations
 from company_research.validation.qa import run_qa
 
 log = logging.getLogger(__name__)
@@ -69,7 +74,7 @@ def analyze(
     )
     db.insert_run(run)
 
-    # Step 2: Source acquisition
+    # Step 2: Source acquisition — prioritized by form type (10-K first)
     log.info("Acquiring EDGAR sources (max %d filings)...", profile.get("max_filings", 20))
     edgar = EdgarAdapter(cache=cache, max_filings=profile.get("max_filings", 20))
     sources = edgar.search(company, cutoff=as_of)
@@ -78,9 +83,9 @@ def analyze(
     for source in sources:
         db.upsert_source(source, run.run_id)
 
-    # Step 3 + 4: Fetch and parse (first 3 filings for M1 proof of concept)
+    # Step 3 + 4: Fetch and parse all prioritized filings
     normalized_docs = []
-    for source in sources[:3]:
+    for source in sources:
         log.info("Fetching %s...", source.title)
         try:
             raw_doc = edgar.fetch(source)
@@ -96,7 +101,6 @@ def analyze(
     log.info("Extracting XBRL financial metrics...")
     try:
         company_facts = get_company_facts(company.cik)
-        # Create a synthetic source for XBRL data
         xbrl_source = SourceRecord(
             title=f"{company.issuer_name} XBRL Company Facts",
             publisher="SEC EDGAR",
@@ -121,13 +125,14 @@ def analyze(
     except Exception as e:
         log.warning("XBRL extraction failed: %s", e)
 
-    # Step 6: LLM fact extraction (Company Snapshot section for M1)
+    # Step 6: LLM fact extraction for all profile sections across all documents
     target_sections = profile.get("sections", ["company_snapshot"])
     if isinstance(target_sections, str) and target_sections == "all":
         target_sections = list(SECTION_TOPICS.keys())
 
-    for norm_doc in normalized_docs[:2]:  # limit for M1
-        for section in target_sections[:1]:  # company_snapshot only for M1
+    all_facts: list[EvidenceFact] = []
+    for norm_doc in normalized_docs:
+        for section in target_sections:
             try:
                 facts = extract_and_store(
                     doc=norm_doc,
@@ -137,15 +142,55 @@ def analyze(
                     llm=llm,
                     section=section,
                 )
+                all_facts.extend(facts)
                 log.info("Extracted %d facts for section '%s'", len(facts), section)
             except Exception as e:
                 log.error("Fact extraction failed for section '%s': %s", section, e)
 
-    # Step 7: QA
-    log.info("Running QA checks...")
-    qa_result = run_qa(run.run_id, db)
+    # Step 7: Contradiction detection
+    if all_facts:
+        log.info("Running contradiction detection on %d facts...", len(all_facts))
+        try:
+            contradictions = llm.detect_counterevidence(all_facts, run.run_id)
+            for c in contradictions:
+                db.insert_contradiction(c)
+            log.info("Detected %d contradictions", len(contradictions))
+        except Exception as e:
+            log.error("Contradiction detection failed: %s", e)
 
-    # Step 8: Export
+    # Step 8: Citation verification
+    log.info("Verifying citations...")
+    try:
+        verified, failed = verify_citations(run.run_id, db, cache)
+        log.info("Citations: %d verified, %d failed", verified, failed)
+    except Exception as e:
+        log.error("Citation verification failed: %s", e)
+
+    # Step 9: Section analysis — one conclusion per profile section
+    log.info("Running section analysis for %d sections...", len(target_sections))
+    analyze_all_sections(
+        sections=target_sections,
+        facts=all_facts,
+        run=run,
+        db=db,
+        llm=llm,
+    )
+
+    # Step 10: Report generation (reads from evidence store only)
+    log.info("Generating report...")
+    try:
+        report_md = generate_report(run=run, company=company, db=db, llm=llm)
+        db_sources = db.get_sources(run.run_id)
+        write_report(report_md=report_md, sources=db_sources, out_dir=out_dir)
+        log.info("Report written to %s", out_dir)
+    except Exception as e:
+        log.error("Report generation failed: %s", e)
+
+    # Step 11: QA
+    log.info("Running QA checks...")
+    qa_result = run_qa(run.run_id, db, out_dir=out_dir)
+
+    # Step 12: Export
     log.info("Exporting structured outputs to %s...", out_dir)
     export_run(run.run_id, db, out_dir)
     export_qa(qa_result, out_dir)
