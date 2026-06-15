@@ -130,6 +130,26 @@ def compare(ctx: click.Context, symbol: str, peers: tuple[str, ...]) -> None:
     console.print(f"[yellow]Compare mode not yet implemented (Milestone 2).[/yellow]")
 
 
+@cli.command("to-html")
+@click.argument("report_md", type=click.Path(exists=True))
+@click.option(
+    "--output",
+    "output_html",
+    default=None,
+    type=click.Path(),
+    help="Output HTML path. Defaults to report.html next to the input file.",
+)
+@click.pass_context
+def to_html(ctx: click.Context, report_md: str, output_html: str | None) -> None:
+    """Convert a report.md to a styled, self-contained HTML file."""
+    from company_research.reporting.html_export import convert
+
+    md_path = Path(report_md)
+    html_path = Path(output_html) if output_html else None
+    out = convert(md_path, html_path)
+    console.print(f"[green]✓[/green] HTML report: {out}")
+
+
 def _print_output_summary(out_dir: Path) -> None:
     files = [
         "sources.json", "evidence.jsonl", "metrics.csv",
