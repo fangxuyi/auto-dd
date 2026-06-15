@@ -3,6 +3,7 @@ profiles:
     lookback_years: 1
     max_filings: 2          # latest 10-K + latest 10-Q
     max_competitors: 2
+    rag_top_k: 64           # chunks retrieved per section
     sections:               # template sections to cover
       - company_snapshot
       - core_product
@@ -17,6 +18,7 @@ profiles:
     lookback_years: 5
     max_filings: 20         # ~5 years of 10-K + 10-Q
     max_competitors: 5
+    rag_top_k: 64           # chunks retrieved per section
     sections:
       - company_snapshot
       - core_product
@@ -41,6 +43,7 @@ profiles:
     lookback_years: 10
     max_filings: 50
     max_competitors: 10
+    rag_top_k: 64           # chunks retrieved per section
     sections: all
     target_words_min: 0     # no cap — determined by evidence
     target_words_max: 0

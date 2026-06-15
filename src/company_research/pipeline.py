@@ -11,6 +11,7 @@ from company_research.extraction.facts import SECTION_TOPICS, extract_and_store
 from company_research.identity.edgar import get_company_facts
 from company_research.identity.resolver import resolve
 from company_research.llm.anthropic import AnthropicProvider
+from company_research.llm.base import ReasoningProvider
 from company_research.llm.prompts import prompt_version
 from company_research.models.evidence import EvidenceFact
 from company_research.models.identity import ResearchRun
@@ -22,10 +23,14 @@ from company_research.sources.edgar import EdgarAdapter
 from company_research.storage.cache import RawCache
 from company_research.storage.database import Database
 from company_research.storage.export import export_qa, export_run
+from company_research.storage.vectorstore import VectorStore
 from company_research.validation.citations import verify_citations
 from company_research.validation.qa import run_qa
 
 log = logging.getLogger(__name__)
+
+_LOG_FORMAT = "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
+_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def _git_commit() -> str:
@@ -37,28 +42,101 @@ def _git_commit() -> str:
         return "unknown"
 
 
+def _attach_file_log(log_path: Path) -> logging.FileHandler:
+    """Add a FileHandler to the root logger; returns it for later removal."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FORMAT))
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
+def _detach_file_log(handler: logging.FileHandler) -> None:
+    handler.flush()
+    handler.close()
+    logging.getLogger().removeHandler(handler)
+
+
 def analyze(
     symbol: str,
     depth: str,
     as_of: date,
     lookback_years: int,
     output_root: Path,
+    dry_run: bool = False,
+    rag_top_k: int | None = None,
 ) -> ResearchRun:
     profile = settings.profile(depth)
     out_dir = output_root / symbol.upper() / as_of.isoformat()
+    out_dir.mkdir(parents=True, exist_ok=True)
 
+    file_handler = _attach_file_log(out_dir / "run.log")
+    try:
+        return _run(
+            symbol=symbol,
+            depth=depth,
+            as_of=as_of,
+            lookback_years=lookback_years,
+            output_root=output_root,
+            out_dir=out_dir,
+            profile=profile,
+            dry_run=dry_run,
+            rag_top_k=rag_top_k,
+        )
+    finally:
+        _detach_file_log(file_handler)
+
+
+def _run(
+    symbol: str,
+    depth: str,
+    as_of: date,
+    lookback_years: int,
+    output_root: Path,
+    out_dir: Path,
+    profile: dict,
+    dry_run: bool,
+    rag_top_k: int | None,
+) -> ResearchRun:
     db_path = output_root / "research.db"
     cache_root = output_root / ".cache"
+    effective_rag_top_k = rag_top_k if rag_top_k is not None else profile.get("rag_top_k", 12)
 
     db = Database(db_path)
     cache = RawCache(cache_root)
-    llm = AnthropicProvider()
+    vector_store = VectorStore(base_dir=output_root, symbol=symbol)
+
+    llm: ReasoningProvider
+    if dry_run:
+        from company_research.llm.dry_run import DryRunProvider
+        prompts_dir = out_dir / "prompts"
+        llm = DryRunProvider(prompts_dir=prompts_dir)
+    else:
+        llm = AnthropicProvider()
+
+    # Log run header — captured in run.log and console
+    _log_run_header(
+        symbol=symbol,
+        depth=depth,
+        as_of=as_of,
+        lookback_years=lookback_years,
+        model_id=settings.model_id,
+        dry_run=dry_run,
+        rag_top_k=effective_rag_top_k,
+        out_dir=out_dir,
+    )
 
     # Step 1: Entity resolution
+    log.info("Step 1/12 — Entity resolution")
     log.info("Resolving entity for %s...", symbol)
     company = resolve(symbol)
     db.upsert_company(company)
-    log.info("Resolved: %s (%s) CIK=%s", company.issuer_name, company.exchange, company.cik)
+    log.info(
+        "Resolved: %s | exchange=%s | CIK=%s | currency=%s | fiscal_year_end=%s",
+        company.issuer_name, company.exchange, company.cik,
+        company.currency, company.fiscal_year_end,
+    )
 
     # Create run record
     run = ResearchRun(
@@ -73,32 +151,53 @@ def analyze(
         output_dir=str(out_dir),
     )
     db.insert_run(run)
+    log.info("Run created: run_id=%s", run.run_id)
 
-    # Step 2: Source acquisition — prioritized by form type (10-K first)
-    log.info("Acquiring EDGAR sources (max %d filings)...", profile.get("max_filings", 20))
+    # Step 2: Source acquisition
+    log.info("Step 2/12 — Source acquisition (max_filings=%d)", profile.get("max_filings", 20))
     edgar = EdgarAdapter(cache=cache, max_filings=profile.get("max_filings", 20))
     sources = edgar.search(company, cutoff=as_of)
-    log.info("Found %d EDGAR sources", len(sources))
-
+    log.info("Found %d EDGAR sources after priority sort", len(sources))
+    for i, src in enumerate(sources, 1):
+        log.debug("  Source %02d: [%s] %s", i, src.source_type, src.title)
     for source in sources:
         db.upsert_source(source, run.run_id)
 
-    # Step 3 + 4: Fetch and parse all prioritized filings
-    normalized_docs = []
+    # Step 3+4: Fetch, parse, index
+    log.info("Step 3+4/12 — Fetch, parse, and vector-index %d filings", len(sources))
+    indexed, skipped = 0, 0
     for source in sources:
-        log.info("Fetching %s...", source.title)
+        log.info("Fetching [%s] %s", source.source_type, source.title)
         try:
             raw_doc = edgar.fetch(source)
             is_new = db.upsert_document(raw_doc)
-            if is_new:
-                log.info("Cached %s (%d bytes)", source.source_type, raw_doc.size_bytes)
+            cache_tag = "new" if is_new else "cached"
+            log.debug("Document %s (%s, %d bytes)", source.source_id, cache_tag, raw_doc.size_bytes)
             norm_doc = edgar.normalize(raw_doc)
-            normalized_docs.append(norm_doc)
+            n_chunks = vector_store.index_document(
+                doc_id=norm_doc.doc_id,
+                text=norm_doc.text,
+                metadata={
+                    "source_id": source.source_id,
+                    "title": source.title,
+                    "source_type": source.source_type,
+                    "period_covered": source.period_covered or "",
+                    "published_date": source.published_date.isoformat() if source.published_date else "",
+                },
+            )
+            log.info("Indexed %d chunks from %s (%s)", n_chunks, source.source_type, source.source_id)
+            indexed += 1
         except Exception as e:
-            log.error("Failed to fetch/parse %s: %s", source.url, e)
+            log.error("Failed to fetch/parse/index %s: %s", source.url, e)
+            skipped += 1
 
-    # Step 5: XBRL metric extraction (deterministic)
-    log.info("Extracting XBRL financial metrics...")
+    log.info(
+        "Indexing complete: %d indexed, %d skipped — vector store total=%d chunks",
+        indexed, skipped, vector_store.count,
+    )
+
+    # Step 5: XBRL metrics
+    log.info("Step 5/12 — XBRL financial metric extraction")
     try:
         company_facts = get_company_facts(company.cik)
         xbrl_source = SourceRecord(
@@ -111,7 +210,6 @@ def analyze(
             reliability_tier=1,
         )
         db.upsert_source(xbrl_source, run.run_id)
-
         metrics = extract_metrics(
             company_facts=company_facts,
             run_id=run.run_id,
@@ -121,35 +219,41 @@ def analyze(
         )
         for metric in metrics:
             db.insert_metric(metric)
-        log.info("Stored %d metric observations", len(metrics))
+        log.info("Stored %d XBRL metric observations", len(metrics))
     except Exception as e:
         log.warning("XBRL extraction failed: %s", e)
 
-    # Step 6: LLM fact extraction for all profile sections across all documents
+    # Step 6: RAG fact extraction
     target_sections = profile.get("sections", ["company_snapshot"])
     if isinstance(target_sections, str) and target_sections == "all":
         target_sections = list(SECTION_TOPICS.keys())
 
+    log.info(
+        "Step 6/12 — RAG fact extraction | sections=%d | rag_top_k=%d",
+        len(target_sections), effective_rag_top_k,
+    )
     all_facts: list[EvidenceFact] = []
-    for norm_doc in normalized_docs:
-        for section in target_sections:
-            try:
-                facts = extract_and_store(
-                    doc=norm_doc,
-                    context=company,
-                    run_id=run.run_id,
-                    db=db,
-                    llm=llm,
-                    section=section,
-                )
-                all_facts.extend(facts)
-                log.info("Extracted %d facts for section '%s'", len(facts), section)
-            except Exception as e:
-                log.error("Fact extraction failed for section '%s': %s", section, e)
+    for section in target_sections:
+        try:
+            facts = extract_and_store(
+                vector_store=vector_store,
+                context=company,
+                run_id=run.run_id,
+                db=db,
+                llm=llm,
+                section=section,
+                k=effective_rag_top_k,
+            )
+            all_facts.extend(facts)
+            log.debug("Section '%s' → %d facts (running total=%d)", section, len(facts), len(all_facts))
+        except Exception as e:
+            log.error("Fact extraction failed for section '%s': %s", section, e)
+
+    log.info("Fact extraction complete: %d facts across %d sections", len(all_facts), len(target_sections))
 
     # Step 7: Contradiction detection
+    log.info("Step 7/12 — Contradiction detection (%d facts)", len(all_facts))
     if all_facts:
-        log.info("Running contradiction detection on %d facts...", len(all_facts))
         try:
             contradictions = llm.detect_counterevidence(all_facts, run.run_id)
             for c in contradictions:
@@ -157,17 +261,19 @@ def analyze(
             log.info("Detected %d contradictions", len(contradictions))
         except Exception as e:
             log.error("Contradiction detection failed: %s", e)
+    else:
+        log.warning("No facts available — skipping contradiction detection")
 
     # Step 8: Citation verification
-    log.info("Verifying citations...")
+    log.info("Step 8/12 — Citation verification")
     try:
         verified, failed = verify_citations(run.run_id, db, cache)
         log.info("Citations: %d verified, %d failed", verified, failed)
     except Exception as e:
         log.error("Citation verification failed: %s", e)
 
-    # Step 9: Section analysis — one conclusion per profile section
-    log.info("Running section analysis for %d sections...", len(target_sections))
+    # Step 9: Section analysis
+    log.info("Step 9/12 — Section analysis (%d sections)", len(target_sections))
     analyze_all_sections(
         sections=target_sections,
         facts=all_facts,
@@ -176,37 +282,68 @@ def analyze(
         llm=llm,
     )
 
-    # Step 10: Report generation (reads from evidence store only)
-    log.info("Generating report...")
+    # Step 10: Report generation
+    log.info("Step 10/12 — Report generation")
     try:
         report_md = generate_report(run=run, company=company, db=db, llm=llm)
         db_sources = db.get_sources(run.run_id)
         write_report(report_md=report_md, sources=db_sources, out_dir=out_dir)
-        log.info("Report written to %s", out_dir)
+        report_path = out_dir / "report.md"
+        log.info(
+            "Report written: %s (%d chars, %d words)",
+            report_path, len(report_md), len(report_md.split()),
+        )
     except Exception as e:
         log.error("Report generation failed: %s", e)
 
     # Step 11: QA
-    log.info("Running QA checks...")
+    log.info("Step 11/12 — QA checks")
     qa_result = run_qa(run.run_id, db, out_dir=out_dir)
+    for check, passed in qa_result.checks.items():
+        level = logging.INFO if passed else logging.WARNING
+        log.log(level, "  QA %-40s %s", check, "PASS" if passed else "FAIL")
 
     # Step 12: Export
-    log.info("Exporting structured outputs to %s...", out_dir)
+    log.info("Step 12/12 — Export to %s", out_dir)
     export_run(run.run_id, db, out_dir)
     export_qa(qa_result, out_dir)
 
-    # Update run status
     status = "completed" if qa_result.passed else "partial"
     db.update_run_status(run.run_id, status, datetime.utcnow().isoformat())
     run.status = status
     run.completed_at = datetime.utcnow()
 
     if qa_result.passed:
-        log.info("Run completed successfully.")
+        log.info("=== Run COMPLETED (run_id=%s) ===", run.run_id)
     else:
         log.warning(
-            "Run completed with QA failures: %s",
-            "; ".join(qa_result.critical_failures),
+            "=== Run PARTIAL (run_id=%s) — QA failures: %s ===",
+            run.run_id, "; ".join(qa_result.critical_failures),
         )
 
     return run
+
+
+def _log_run_header(
+    symbol: str,
+    depth: str,
+    as_of: date,
+    lookback_years: int,
+    model_id: str,
+    dry_run: bool,
+    rag_top_k: int,
+    out_dir: Path,
+) -> None:
+    sep = "=" * 60
+    log.info(sep)
+    log.info("  company-research run")
+    log.info("  Symbol:       %s", symbol.upper())
+    log.info("  Depth:        %s", depth)
+    log.info("  As-of:        %s", as_of)
+    log.info("  Lookback:     %dy", lookback_years)
+    log.info("  RAG top-k:    %d", rag_top_k)
+    log.info("  Model:        %s", model_id)
+    log.info("  Dry-run:      %s", dry_run)
+    log.info("  Started:      %s", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
+    log.info("  Output:       %s", out_dir)
+    log.info(sep)
