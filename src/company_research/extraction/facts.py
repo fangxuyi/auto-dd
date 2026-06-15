@@ -26,6 +26,7 @@ SECTION_TOPICS: dict[str, str] = {
     "growth_opportunities": "business_model",
     "key_risks": "risk",
     "scenarios": "financials",
+    "monitoring_dashboard": "business_model",
 }
 
 
