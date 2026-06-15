@@ -43,10 +43,8 @@ def _detect_security_type(
 def _detect_jurisdiction(submissions: dict) -> str:
     stateOfIncorporation = submissions.get("stateOfIncorporation", "")
     # Foreign private issuers file 20-F; domestic file 10-K
-    recent_forms = [
-        f["form"]
-        for f in submissions.get("filings", {}).get("recent", {}).get("form", [])
-    ]
+    # submissions["filings"]["recent"]["form"] is a list of strings, not dicts
+    recent_forms = submissions.get("filings", {}).get("recent", {}).get("form", [])
     if "20-F" in recent_forms:
         return "foreign_private_issuer"
     if stateOfIncorporation and stateOfIncorporation not in ("", "0"):

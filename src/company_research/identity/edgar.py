@@ -25,7 +25,7 @@ def _get(url: str, params: dict[str, Any] | None = None) -> Any:
 
 def lookup_cik(symbol: str) -> list[dict[str, Any]]:
     """Return list of matching company dicts from EDGAR ticker→CIK map."""
-    data = _get(f"{_BASE}/files/company_tickers.json")
+    data = _get("https://www.sec.gov/files/company_tickers.json")
     symbol_upper = symbol.upper()
     matches = [
         v for v in data.values()
