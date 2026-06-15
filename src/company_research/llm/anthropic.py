@@ -124,6 +124,26 @@ class AnthropicProvider:
         result.run_id = run.run_id
         return result
 
+    def synthesize_report(
+        self,
+        conclusions: list[dict],
+        run: ResearchRun,
+        company: CompanyIdentity,
+    ) -> str:
+        conclusions_json = json.dumps(conclusions, indent=2, default=str)
+        prompt = prompts.load(
+            "synthesize_report",
+            company_name=company.issuer_name,
+            symbol=company.symbol,
+            as_of_date=str(run.as_of_date),
+            depth=run.depth,
+            exchange=company.exchange,
+            currency=company.currency,
+            fiscal_year_end=company.fiscal_year_end,
+            conclusions_json=conclusions_json,
+        )
+        return self._call(prompt)
+
     def detect_counterevidence(
         self,
         facts: list[EvidenceFact],

@@ -32,3 +32,10 @@ class ReasoningProvider(Protocol):
         facts: list[EvidenceFact],
         run_id: str,
     ) -> list[Contradiction]: ...
+
+    def synthesize_report(
+        self,
+        conclusions: list[dict],
+        run: ResearchRun,
+        company: CompanyIdentity,
+    ) -> str: ...
