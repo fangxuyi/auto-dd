@@ -119,6 +119,7 @@ def test_export_creates_all_files():
             "sources.json", "evidence.jsonl", "metrics.csv",
             "contradictions.json", "open_questions.json",
             "conclusions.json", "qa_report.json",
+            "company_profile.json", "peers.json",
         ]:
             assert (out_dir / fname).exists(), f"Missing: {fname}"
 
@@ -180,7 +181,9 @@ def test_aapl_full_pipeline(tmp_path):
     assert (out_dir / "sources.json").exists()
     assert (out_dir / "evidence.jsonl").exists()
     assert (out_dir / "qa_report.json").exists()
+    assert (out_dir / "report.md").exists(), "M2: report.md must be produced"
+    assert (out_dir / "executive_summary.md").exists(), "M2: executive_summary.md must be produced"
 
     qa = json.loads((out_dir / "qa_report.json").read_text())
-    # M1: QA may not pass fully (no full report yet), but must run without crashing
     assert "passed" in qa
+    assert qa.get("checks", {}).get("report_md_exists", False), "QA must confirm report.md"
