@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from company_research.models.qa import QAResult
 from company_research.storage.database import Database
 
 
-def run_qa(run_id: str, db: Database) -> QAResult:
+def run_qa(run_id: str, db: Database, out_dir: Path | None = None) -> QAResult:
     """Run QA gate checks for a completed research run."""
     checks: dict[str, bool] = {}
     critical: list[str] = []
@@ -92,6 +93,27 @@ def run_qa(run_id: str, db: Database) -> QAResult:
         warnings.append(
             f"{len(tam_facts)} low-confidence market-size inferences detected — verify sources."
         )
+
+    # 9. report.md was produced
+    if out_dir is not None:
+        report_exists = (out_dir / "report.md").exists()
+        checks["report_md_exists"] = report_exists
+        if not report_exists:
+            critical.append("report.md was not produced.")
+
+        # 10. executive_summary.md was produced
+        summary_exists = (out_dir / "executive_summary.md").exists()
+        checks["executive_summary_exists"] = summary_exists
+        if not summary_exists:
+            critical.append("executive_summary.md was not produced.")
+
+    # 11. Every profile section has at least one conclusion (warning only)
+    conclusion_sections = {c["section"] for c in conclusions}
+    if conclusions:
+        checks["sections_have_conclusions"] = len(conclusion_sections) > 0
+    else:
+        checks["sections_have_conclusions"] = False
+        warnings.append("No section conclusions were generated.")
 
     passed = len(critical) == 0
 

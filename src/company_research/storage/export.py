@@ -47,10 +47,28 @@ def export_run(run_id: str, db: Database, out_dir: Path) -> None:
         json.dumps(questions, indent=2, default=str), encoding="utf-8"
     )
 
-    # conclusions → used by report generator
+    # conclusions.json
     conclusions = db.get_conclusions(run_id)
     (out_dir / "conclusions.json").write_text(
         json.dumps(conclusions, indent=2, default=str), encoding="utf-8"
+    )
+
+    # company_profile.json — stub populated from DB sources; extended in M3
+    company_profile: dict = {}
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM companies WHERE symbol=(SELECT symbol FROM runs WHERE run_id=? LIMIT 1)",
+            (run_id,),
+        ).fetchone()
+        if row:
+            company_profile = dict(row)
+    (out_dir / "company_profile.json").write_text(
+        json.dumps(company_profile, indent=2, default=str), encoding="utf-8"
+    )
+
+    # peers.json — placeholder; peer selection added in M3
+    (out_dir / "peers.json").write_text(
+        json.dumps([], indent=2), encoding="utf-8"
     )
 
 
