@@ -144,6 +144,7 @@ def analyze(
     if isinstance(target_sections, str) and target_sections == "all":
         target_sections = list(SECTION_TOPICS.keys())
 
+    rag_top_k: int = profile.get("rag_top_k", 12)
     all_facts: list[EvidenceFact] = []
     for section in target_sections:
         try:
@@ -154,6 +155,7 @@ def analyze(
                 db=db,
                 llm=llm,
                 section=section,
+                k=rag_top_k,
             )
             all_facts.extend(facts)
         except Exception as e:
