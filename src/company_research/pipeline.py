@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import logging
+import subprocess
+from datetime import date, datetime
+from pathlib import Path
+
+from company_research.config import settings
+from company_research.extraction.facts import SECTION_TOPICS, extract_and_store
+from company_research.identity.edgar import get_company_facts
+from company_research.identity.resolver import resolve
+from company_research.llm.anthropic import AnthropicProvider
+from company_research.llm.prompts import prompt_version
+from company_research.models.identity import ResearchRun
+from company_research.models.sources import SourceRecord
+from company_research.parsing.xbrl import extract_metrics
+from company_research.sources.edgar import EdgarAdapter
+from company_research.storage.cache import RawCache
+from company_research.storage.database import Database
+from company_research.storage.export import export_qa, export_run
+from company_research.validation.qa import run_qa
+
+log = logging.getLogger(__name__)
+
+
+def _git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def analyze(
+    symbol: str,
+    depth: str,
+    as_of: date,
+    lookback_years: int,
+    output_root: Path,
+) -> ResearchRun:
+    profile = settings.profile(depth)
+    out_dir = output_root / symbol.upper() / as_of.isoformat()
+
+    db_path = output_root / "research.db"
+    cache_root = output_root / ".cache"
+
+    db = Database(db_path)
+    cache = RawCache(cache_root)
+    llm = AnthropicProvider()
+
+    # Step 1: Entity resolution
+    log.info("Resolving entity for %s...", symbol)
+    company = resolve(symbol)
+    db.upsert_company(company)
+    log.info("Resolved: %s (%s) CIK=%s", company.issuer_name, company.exchange, company.cik)
+
+    # Create run record
+    run = ResearchRun(
+        symbol=symbol.upper(),
+        depth=depth,
+        as_of_date=as_of,
+        lookback_years=lookback_years,
+        model_id=settings.model_id,
+        prompt_version=prompt_version("extract_facts"),
+        code_commit=_git_commit(),
+        config_hash=settings.config_hash(),
+        output_dir=str(out_dir),
+    )
+    db.insert_run(run)
+
+    # Step 2: Source acquisition
+    log.info("Acquiring EDGAR sources (max %d filings)...", profile.get("max_filings", 20))
+    edgar = EdgarAdapter(cache=cache, max_filings=profile.get("max_filings", 20))
+    sources = edgar.search(company, cutoff=as_of)
+    log.info("Found %d EDGAR sources", len(sources))
+
+    for source in sources:
+        db.upsert_source(source, run.run_id)
+
+    # Step 3 + 4: Fetch and parse (first 3 filings for M1 proof of concept)
+    normalized_docs = []
+    for source in sources[:3]:
+        log.info("Fetching %s...", source.title)
+        try:
+            raw_doc = edgar.fetch(source)
+            is_new = db.upsert_document(raw_doc)
+            if is_new:
+                log.info("Cached %s (%d bytes)", source.source_type, raw_doc.size_bytes)
+            norm_doc = edgar.normalize(raw_doc)
+            normalized_docs.append(norm_doc)
+        except Exception as e:
+            log.error("Failed to fetch/parse %s: %s", source.url, e)
+
+    # Step 5: XBRL metric extraction (deterministic)
+    log.info("Extracting XBRL financial metrics...")
+    try:
+        company_facts = get_company_facts(company.cik)
+        # Create a synthetic source for XBRL data
+        xbrl_source = SourceRecord(
+            title=f"{company.issuer_name} XBRL Company Facts",
+            publisher="SEC EDGAR",
+            url=f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company.cik}.json",
+            source_type="10-K",
+            primary_or_secondary="primary",
+            company_or_external="regulator",
+            reliability_tier=1,
+        )
+        db.upsert_source(xbrl_source, run.run_id)
+
+        metrics = extract_metrics(
+            company_facts=company_facts,
+            run_id=run.run_id,
+            source_id=xbrl_source.source_id,
+            cutoff_year=as_of.year,
+            lookback_years=lookback_years,
+        )
+        for metric in metrics:
+            db.insert_metric(metric)
+        log.info("Stored %d metric observations", len(metrics))
+    except Exception as e:
+        log.warning("XBRL extraction failed: %s", e)
+
+    # Step 6: LLM fact extraction (Company Snapshot section for M1)
+    target_sections = profile.get("sections", ["company_snapshot"])
+    if isinstance(target_sections, str) and target_sections == "all":
+        target_sections = list(SECTION_TOPICS.keys())
+
+    for norm_doc in normalized_docs[:2]:  # limit for M1
+        for section in target_sections[:1]:  # company_snapshot only for M1
+            try:
+                facts = extract_and_store(
+                    doc=norm_doc,
+                    context=company,
+                    run_id=run.run_id,
+                    db=db,
+                    llm=llm,
+                    section=section,
+                )
+                log.info("Extracted %d facts for section '%s'", len(facts), section)
+            except Exception as e:
+                log.error("Fact extraction failed for section '%s': %s", section, e)
+
+    # Step 7: QA
+    log.info("Running QA checks...")
+    qa_result = run_qa(run.run_id, db)
+
+    # Step 8: Export
+    log.info("Exporting structured outputs to %s...", out_dir)
+    export_run(run.run_id, db, out_dir)
+    export_qa(qa_result, out_dir)
+
+    # Update run status
+    status = "completed" if qa_result.passed else "partial"
+    db.update_run_status(run.run_id, status, datetime.utcnow().isoformat())
+    run.status = status
+    run.completed_at = datetime.utcnow()
+
+    if qa_result.passed:
+        log.info("Run completed successfully.")
+    else:
+        log.warning(
+            "Run completed with QA failures: %s",
+            "; ".join(qa_result.critical_failures),
+        )
+
+    return run
