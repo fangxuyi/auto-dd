@@ -352,3 +352,104 @@ def test_qa_checks_report_files():
         qa2 = run_qa(run.run_id, db, out_dir=out_dir)
         assert qa2.checks.get("report_md_exists", False)
         assert qa2.checks.get("executive_summary_exists", False)
+
+
+# --- DryRunProvider ---
+
+def test_dry_run_provider_writes_extract_facts_prompt():
+    from datetime import date
+    from company_research.llm.dry_run import DryRunProvider
+    from company_research.models.identity import CompanyIdentity
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        prompts_dir = Path(tmpdir) / "prompts"
+        provider = DryRunProvider(prompts_dir=prompts_dir)
+        company = CompanyIdentity(
+            symbol="TEST", exchange="NASDAQ", issuer_name="Test Corp",
+            cik="0000000001", fiscal_year_end="12-31", currency="USD",
+            filing_jurisdiction="US", security_type="operating_company",
+        )
+        chunks = [{"text": "Test Corp sells widgets.", "metadata": {"source_id": "SRC-001", "title": "Test 10-K", "source_type": "10-K", "period_covered": "FY2025"}, "score": 0.9}]
+        facts = provider.extract_facts(chunks=chunks, context=company, run_id="run-001", topic="business_model")
+        assert facts == []
+        files = list(prompts_dir.glob("*.txt"))
+        assert len(files) == 1
+        assert "extract_business_model" in files[0].name
+        content = files[0].read_text()
+        assert "Test Corp" in content
+
+
+def test_dry_run_provider_writes_analyze_section_prompt():
+    from datetime import date
+    from company_research.llm.dry_run import DryRunProvider
+    from company_research.models.identity import ResearchRun
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        prompts_dir = Path(tmpdir) / "prompts"
+        provider = DryRunProvider(prompts_dir=prompts_dir)
+        run = ResearchRun(
+            symbol="TEST", depth="quick", as_of_date=date(2026, 6, 15),
+            model_id="test", prompt_version="1.0", code_commit="abc",
+            config_hash="dead", output_dir=tmpdir,
+        )
+        conclusion = provider.analyze_section(section="company_snapshot", facts=[], run=run)
+        assert conclusion.section == "company_snapshot"
+        assert "[dry-run" in conclusion.conclusion
+        files = list(prompts_dir.glob("*.txt"))
+        assert len(files) == 1
+        assert "analyze_company_snapshot" in files[0].name
+
+
+def test_dry_run_provider_synthesize_report_returns_placeholder():
+    from datetime import date
+    from company_research.llm.dry_run import DryRunProvider
+    from company_research.models.identity import CompanyIdentity, ResearchRun
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        prompts_dir = Path(tmpdir) / "prompts"
+        provider = DryRunProvider(prompts_dir=prompts_dir)
+        company = CompanyIdentity(
+            symbol="ACME", exchange="NYSE", issuer_name="Acme Corp",
+            cik="0000000002", fiscal_year_end="12-31", currency="USD",
+            filing_jurisdiction="US", security_type="operating_company",
+        )
+        run = ResearchRun(
+            symbol="ACME", depth="quick", as_of_date=date(2026, 6, 15),
+            model_id="test", prompt_version="1.0", code_commit="abc",
+            config_hash="dead", output_dir=tmpdir,
+        )
+        result = provider.synthesize_report(conclusions=[], run=run, company=company)
+        assert "Acme Corp" in result
+        assert "[dry-run" in result
+        files = list(prompts_dir.glob("*.txt"))
+        assert len(files) == 1
+        assert "synthesize_report" in files[0].name
+
+
+def test_dry_run_provider_counter_increments():
+    from datetime import date
+    from company_research.llm.dry_run import DryRunProvider
+    from company_research.models.identity import CompanyIdentity, ResearchRun
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        prompts_dir = Path(tmpdir) / "prompts"
+        provider = DryRunProvider(prompts_dir=prompts_dir)
+        company = CompanyIdentity(
+            symbol="TEST", exchange="NASDAQ", issuer_name="Test Corp",
+            cik="0000000001", fiscal_year_end="12-31", currency="USD",
+            filing_jurisdiction="US", security_type="operating_company",
+        )
+        run = ResearchRun(
+            symbol="TEST", depth="quick", as_of_date=date(2026, 6, 15),
+            model_id="test", prompt_version="1.0", code_commit="abc",
+            config_hash="dead", output_dir=tmpdir,
+        )
+        chunks = [{"text": "x", "metadata": {"source_id": "SRC-001", "title": "T", "source_type": "10-K", "period_covered": ""}, "score": 0.5}]
+        provider.extract_facts(chunks=chunks, context=company, run_id="r", topic="business_model")
+        provider.extract_facts(chunks=chunks, context=company, run_id="r", topic="product")
+        provider.analyze_section(section="company_snapshot", facts=[], run=run)
+        files = sorted(prompts_dir.glob("*.txt"))
+        assert len(files) == 3
+        assert files[0].name.startswith("01_")
+        assert files[1].name.startswith("02_")
+        assert files[2].name.startswith("03_")

@@ -37,6 +37,8 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.option("--as-of", "as_of", default=None, help="Analysis date (YYYY-MM-DD). Defaults to today.")
 @click.option("--lookback-years", "lookback_years", default=5, type=int)
 @click.option("--output", "output_dir", default="./research", type=click.Path())
+@click.option("--rag-top-k", "rag_top_k", default=None, type=int, help="Override profile rag_top_k (chunks per section).")
+@click.option("--dry-run", "dry_run", is_flag=True, help="Write prompts to files instead of calling the API.")
 @click.pass_context
 def analyze(
     ctx: click.Context,
@@ -45,6 +47,8 @@ def analyze(
     as_of: str | None,
     lookback_years: int,
     output_dir: str,
+    rag_top_k: int | None,
+    dry_run: bool,
 ) -> None:
     """Analyze a public company and produce a research report."""
     from company_research.pipeline import analyze as run_pipeline
@@ -52,9 +56,12 @@ def analyze(
     as_of_date = date.fromisoformat(as_of) if as_of else date.today()
     out = Path(output_dir)
 
+    mode_tag = " [yellow][dry-run][/yellow]" if dry_run else ""
+    rag_tag = f" | rag-top-k={rag_top_k}" if rag_top_k is not None else ""
     console.print(
         f"[bold]Analyzing[/bold] [cyan]{symbol.upper()}[/cyan] | "
         f"depth=[yellow]{depth}[/yellow] | as-of={as_of_date} | lookback={lookback_years}y"
+        f"{rag_tag}{mode_tag}"
     )
 
     try:
@@ -64,10 +71,19 @@ def analyze(
             as_of=as_of_date,
             lookback_years=lookback_years,
             output_root=out,
+            dry_run=dry_run,
+            rag_top_k=rag_top_k,
         )
         out_dir = out / symbol.upper() / as_of_date.isoformat()
         console.print(f"\n[green]✓[/green] Run {run.status}. Outputs at: {out_dir}")
-        _print_output_summary(out_dir)
+        if dry_run:
+            prompts_dir = out_dir / "prompts"
+            prompt_files = sorted(prompts_dir.glob("*.txt")) if prompts_dir.exists() else []
+            console.print(f"\n[bold]Dry-run prompts[/bold] ({len(prompt_files)} files at {prompts_dir}):")
+            for p in prompt_files:
+                console.print(f"  [cyan]{p.name}[/cyan]  ({p.stat().st_size:,} bytes)")
+        else:
+            _print_output_summary(out_dir)
     except Exception as e:
         console.print(f"[red]✗ Analysis failed:[/red] {e}")
         sys.exit(1)

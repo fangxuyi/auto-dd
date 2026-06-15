@@ -26,10 +26,16 @@ class AnthropicProvider:
         self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     def _call(self, prompt: str) -> str:
+        log.debug("API call → model=%s prompt_chars=%d", self.model_id, len(prompt))
         response = self._client.messages.create(
             model=self.model_id,
             max_tokens=_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
+        )
+        usage = response.usage
+        log.debug(
+            "API response ← input_tokens=%d output_tokens=%d stop_reason=%s",
+            usage.input_tokens, usage.output_tokens, response.stop_reason,
         )
         return response.content[0].text  # type: ignore[index]
 
@@ -84,6 +90,7 @@ class AnthropicProvider:
             try:
                 sid = raw.pop("source_id", None)
                 if sid not in valid_source_ids:
+                    log.debug("Unknown source_id %r — using fallback %s", sid, fallback_source_id)
                     sid = fallback_source_id
                 fact = EvidenceFact(
                     run_id=run_id,
@@ -94,6 +101,10 @@ class AnthropicProvider:
             except Exception as e:
                 log.warning("Skipping malformed fact: %s — %s", raw, e)
 
+        log.info(
+            "extract_facts topic=%s → %d facts from %d chunks (model=%s)",
+            topic, len(all_facts), len(chunks), self.model_id,
+        )
         return all_facts
 
     def analyze_section(
@@ -133,6 +144,10 @@ class AnthropicProvider:
         run: ResearchRun,
         company: CompanyIdentity,
     ) -> str:
+        log.info(
+            "synthesize_report symbol=%s depth=%s conclusions=%d",
+            company.symbol, run.depth, len(conclusions),
+        )
         conclusions_json = json.dumps(conclusions, indent=2, default=str)
         prompt = prompts.load(
             "synthesize_report",
@@ -145,7 +160,9 @@ class AnthropicProvider:
             fiscal_year_end=company.fiscal_year_end,
             conclusions_json=conclusions_json,
         )
-        return self._call(prompt)
+        result = self._call(prompt)
+        log.info("synthesize_report complete (%d chars)", len(result))
+        return result
 
     def detect_counterevidence(
         self,
@@ -155,6 +172,7 @@ class AnthropicProvider:
         if not facts:
             return []
 
+        log.info("detect_counterevidence: scanning %d facts for contradictions", len(facts))
         facts_json = json.dumps(
             [f.model_dump() for f in facts], indent=2, default=str
         )
@@ -175,6 +193,7 @@ class AnthropicProvider:
                 contradictions.append(c)
             except Exception as e:
                 log.warning("Skipping malformed contradiction: %s — %s", raw, e)
+        log.info("detect_counterevidence → %d contradictions", len(contradictions))
         return contradictions
 
 
