@@ -31,6 +31,20 @@ _FORM_TYPE_MAP: dict[str, str] = {
     "S-1/A": "S-1",
 }
 
+# Lower number = higher priority; Form4 and minor forms pushed to end
+_FORM_PRIORITY: dict[str, int] = {
+    "10-K": 0,
+    "20-F": 1,
+    "10-Q": 2,
+    "S-1": 3,
+    "DEF14A": 4,
+    "8-K": 5,
+    "6-K": 6,
+    "13D": 7,
+    "13G": 8,
+    "Form4": 99,
+}
+
 _TARGET_FORMS = set(_FORM_TYPE_MAP.keys())
 
 
@@ -110,10 +124,9 @@ class EdgarAdapter:
                 )
             )
 
-            if len(records) >= self.max_filings:
-                break
-
-        return records
+        # Prioritize substantive filings (10-K, 10-Q) over high-frequency minor forms (Form 4)
+        records.sort(key=lambda r: _FORM_PRIORITY.get(r.source_type, 50))
+        return records[: self.max_filings]
 
     def fetch(self, source: SourceRecord) -> RawDocument:
         data = _get_bytes(source.url)
