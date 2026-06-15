@@ -1,4 +1,4 @@
-"""Unit tests for M2 components: guidance loader, formatter, section analyzer, edgar prioritization."""
+"""Unit tests for M2/RAG components: guidance loader, formatter, section analyzer, vector store."""
 from __future__ import annotations
 
 import json
@@ -189,6 +189,110 @@ def test_export_creates_company_profile_and_peers():
         assert (out_dir / "peers.json").exists()
         peers = json.loads((out_dir / "peers.json").read_text())
         assert peers == []
+
+
+# --- vector store ---
+
+def test_vectorstore_index_and_retrieve():
+    from company_research.storage.vectorstore import VectorStore
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vs = VectorStore(base_dir=Path(tmpdir), symbol="TEST")
+        n = vs.index_document(
+            doc_id="doc-001",
+            text=(
+                "Apple Inc. sells iPhones, iPads, Macs, and services. "
+                "The iPhone is the primary revenue driver, accounting for over 50% of revenue. "
+                "Services including the App Store, iCloud, and Apple Music are the fastest growing segment. "
+                "Apple competes with Samsung, Google, and Microsoft across its product lines. "
+            ) * 20,  # repeat to get multiple chunks
+            metadata={
+                "source_id": "SRC-001",
+                "title": "Apple 10-K FY2025",
+                "source_type": "10-K",
+                "period_covered": "FY2025",
+            },
+        )
+        assert n > 0
+        assert vs.count > 0
+
+        results = vs.retrieve("iPhone revenue product description", k=3)
+        assert len(results) > 0
+        assert all("text" in r and "metadata" in r and "score" in r for r in results)
+        assert all(r["metadata"]["source_id"] == "SRC-001" for r in results)
+        # Most relevant chunk should have a meaningful similarity score
+        assert results[0]["score"] > 0.0
+
+
+def test_vectorstore_empty_retrieve():
+    from company_research.storage.vectorstore import VectorStore
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vs = VectorStore(base_dir=Path(tmpdir), symbol="EMPTY")
+        results = vs.retrieve("anything", k=5)
+        assert results == []
+
+
+def test_topic_queries_cover_all_section_topics():
+    from company_research.extraction.facts import SECTION_TOPICS
+    from company_research.extraction.topic_queries import TOPIC_QUERIES
+    topics = set(SECTION_TOPICS.values())
+    for topic in topics:
+        assert topic in TOPIC_QUERIES, f"No query for topic: {topic}"
+
+
+def test_extract_and_store_uses_vector_store():
+    """extract_and_store retrieves chunks and calls llm.extract_facts with them."""
+    from datetime import date
+    from company_research.extraction.facts import extract_and_store
+    from company_research.models.identity import ResearchRun, CompanyIdentity
+    from company_research.storage.database import Database
+    from company_research.storage.vectorstore import VectorStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        vs = VectorStore(base_dir=Path(tmpdir), symbol="TEST")
+        vs.index_document(
+            doc_id="doc-001",
+            text="Apple Inc. sells hardware and software products globally. " * 50,
+            metadata={"source_id": "SRC-001", "title": "Apple 10-K", "source_type": "10-K", "period_covered": "FY2025"},
+        )
+
+        company = CompanyIdentity(
+            symbol="TEST", exchange="NASDAQ", issuer_name="Test Corp",
+            cik="0000000001", fiscal_year_end="12-31", currency="USD",
+            filing_jurisdiction="US", security_type="operating_company",
+        )
+        run = ResearchRun(
+            symbol="TEST", depth="quick", as_of_date=date(2026, 6, 15),
+            model_id="test", prompt_version="1.0", code_commit="abc",
+            config_hash="dead", output_dir=tmpdir,
+        )
+        db.insert_run(run)
+
+        from company_research.models.evidence import EvidenceFact
+        from company_research.models.sources import SourceRecord
+        src = SourceRecord(
+            title="Test 10-K", publisher="SEC", url="https://example.com/10k.htm",
+            source_type="10-K", primary_or_secondary="primary",
+            company_or_external="regulator", reliability_tier=1,
+        )
+        db.upsert_source(src, run.run_id)
+        mock_fact = EvidenceFact(
+            run_id=run.run_id, topic="business_model",
+            claim="Apple sells hardware.", source_id=src.source_id,
+            source_location="Item 1", confidence="high",
+        )
+        llm_mock = MagicMock()
+        llm_mock.extract_facts.return_value = [mock_fact]
+
+        facts = extract_and_store(
+            vector_store=vs, context=company, run_id=run.run_id,
+            db=db, llm=llm_mock, section="company_snapshot",
+        )
+        assert len(facts) == 1
+        # LLM was called with chunks (list of dicts), not a NormalizedDocument
+        call_args = llm_mock.extract_facts.call_args
+        assert isinstance(call_args.kwargs["chunks"], list)
+        assert all("text" in c for c in call_args.kwargs["chunks"])
 
 
 def test_qa_checks_report_files():

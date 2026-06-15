@@ -22,6 +22,7 @@ from company_research.sources.edgar import EdgarAdapter
 from company_research.storage.cache import RawCache
 from company_research.storage.database import Database
 from company_research.storage.export import export_qa, export_run
+from company_research.storage.vectorstore import VectorStore
 from company_research.validation.citations import verify_citations
 from company_research.validation.qa import run_qa
 
@@ -53,6 +54,7 @@ def analyze(
     db = Database(db_path)
     cache = RawCache(cache_root)
     llm = AnthropicProvider()
+    vector_store = VectorStore(base_dir=output_root, symbol=symbol)
 
     # Step 1: Entity resolution
     log.info("Resolving entity for %s...", symbol)
@@ -83,8 +85,8 @@ def analyze(
     for source in sources:
         db.upsert_source(source, run.run_id)
 
-    # Step 3 + 4: Fetch and parse all prioritized filings
-    normalized_docs = []
+    # Step 3 + 4: Fetch, parse, and index into vector store
+    log.info("Fetching and indexing %d filings...", len(sources))
     for source in sources:
         log.info("Fetching %s...", source.title)
         try:
@@ -93,11 +95,24 @@ def analyze(
             if is_new:
                 log.info("Cached %s (%d bytes)", source.source_type, raw_doc.size_bytes)
             norm_doc = edgar.normalize(raw_doc)
-            normalized_docs.append(norm_doc)
+            n_chunks = vector_store.index_document(
+                doc_id=norm_doc.doc_id,
+                text=norm_doc.text,
+                metadata={
+                    "source_id": source.source_id,
+                    "title": source.title,
+                    "source_type": source.source_type,
+                    "period_covered": source.period_covered or "",
+                    "published_date": source.published_date.isoformat() if source.published_date else "",
+                },
+            )
+            log.info("Indexed %d chunks from %s", n_chunks, source.source_type)
         except Exception as e:
-            log.error("Failed to fetch/parse %s: %s", source.url, e)
+            log.error("Failed to fetch/parse/index %s: %s", source.url, e)
 
-    # Step 5: XBRL metric extraction (deterministic)
+    log.info("Vector store contains %d chunks total", vector_store.count)
+
+    # Step 5: XBRL metric extraction (deterministic, parallel to vector index)
     log.info("Extracting XBRL financial metrics...")
     try:
         company_facts = get_company_facts(company.cik)
@@ -111,7 +126,6 @@ def analyze(
             reliability_tier=1,
         )
         db.upsert_source(xbrl_source, run.run_id)
-
         metrics = extract_metrics(
             company_facts=company_facts,
             run_id=run.run_id,
@@ -125,27 +139,25 @@ def analyze(
     except Exception as e:
         log.warning("XBRL extraction failed: %s", e)
 
-    # Step 6: LLM fact extraction for all profile sections across all documents
+    # Step 6: RAG fact extraction — one retrieval + extraction per section
     target_sections = profile.get("sections", ["company_snapshot"])
     if isinstance(target_sections, str) and target_sections == "all":
         target_sections = list(SECTION_TOPICS.keys())
 
     all_facts: list[EvidenceFact] = []
-    for norm_doc in normalized_docs:
-        for section in target_sections:
-            try:
-                facts = extract_and_store(
-                    doc=norm_doc,
-                    context=company,
-                    run_id=run.run_id,
-                    db=db,
-                    llm=llm,
-                    section=section,
-                )
-                all_facts.extend(facts)
-                log.info("Extracted %d facts for section '%s'", len(facts), section)
-            except Exception as e:
-                log.error("Fact extraction failed for section '%s': %s", section, e)
+    for section in target_sections:
+        try:
+            facts = extract_and_store(
+                vector_store=vector_store,
+                context=company,
+                run_id=run.run_id,
+                db=db,
+                llm=llm,
+                section=section,
+            )
+            all_facts.extend(facts)
+        except Exception as e:
+            log.error("Fact extraction failed for section '%s': %s", section, e)
 
     # Step 7: Contradiction detection
     if all_facts:
@@ -166,7 +178,7 @@ def analyze(
     except Exception as e:
         log.error("Citation verification failed: %s", e)
 
-    # Step 9: Section analysis — one conclusion per profile section
+    # Step 9: Section analysis
     log.info("Running section analysis for %d sections...", len(target_sections))
     analyze_all_sections(
         sections=target_sections,
@@ -176,7 +188,7 @@ def analyze(
         llm=llm,
     )
 
-    # Step 10: Report generation (reads from evidence store only)
+    # Step 10: Report generation
     log.info("Generating report...")
     try:
         report_md = generate_report(run=run, company=company, db=db, llm=llm)
@@ -195,7 +207,6 @@ def analyze(
     export_run(run.run_id, db, out_dir)
     export_qa(qa_result, out_dir)
 
-    # Update run status
     status = "completed" if qa_result.passed else "partial"
     db.update_run_status(run.run_id, status, datetime.utcnow().isoformat())
     run.status = status

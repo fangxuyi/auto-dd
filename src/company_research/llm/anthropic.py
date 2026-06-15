@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 import anthropic
 
@@ -11,12 +12,10 @@ from company_research.llm.retry import LLMStructuredOutputError, call_with_retry
 from company_research.models.analysis import Contradiction, SectionConclusion
 from company_research.models.evidence import EvidenceFact
 from company_research.models.identity import CompanyIdentity, ResearchRun
-from company_research.models.sources import NormalizedDocument
 
 log = logging.getLogger(__name__)
 
-_MAX_TOKENS = 4096
-_EXTRACT_FACTS_CHUNK = 12_000  # chars per chunk to stay within context
+_MAX_TOKENS = 8192  # raised to avoid mid-JSON truncation
 
 
 class AnthropicProvider:
@@ -44,52 +43,56 @@ class AnthropicProvider:
 
     def extract_facts(
         self,
-        doc: NormalizedDocument,
+        chunks: list[dict[str, Any]],
         context: CompanyIdentity,
         run_id: str,
         topic: str = "business_model",
-        source_location: str = "",
     ) -> list[EvidenceFact]:
-        # Chunk large documents to stay within context limits
-        text = doc.text
-        chunks = [
-            text[i : i + _EXTRACT_FACTS_CHUNK]
-            for i in range(0, len(text), _EXTRACT_FACTS_CHUNK)
-        ]
+        """Extract facts from retrieved vector-store chunks.
+
+        Each chunk is a dict with keys: text, metadata (source_id, title,
+        source_type, period_covered, published_date), score.
+        """
+        if not chunks:
+            return []
+
+        excerpts = _format_excerpts(chunks)
+
+        prompt = prompts.load(
+            "extract_facts",
+            company_name=context.issuer_name,
+            symbol=context.symbol,
+            topic=topic,
+            excerpts=excerpts,
+        )
+
+        raw_facts: list[dict] = call_with_retry(
+            call_fn=self._call,
+            repair_fn=self._repair,
+            prompt=prompt,
+            model_class=None,
+            is_list=True,
+        )
+
+        # Build a lookup: source_id → source_id for validation
+        valid_source_ids = {c["metadata"].get("source_id", "") for c in chunks}
+        # fallback source_id = highest-scoring chunk's source_id
+        fallback_source_id = chunks[0]["metadata"].get("source_id", "") if chunks else ""
 
         all_facts: list[EvidenceFact] = []
-        for chunk_idx, chunk in enumerate(chunks[:5]):  # cap at 5 chunks per doc
-            prompt = prompts.load(
-                "extract_facts",
-                company_name=context.issuer_name,
-                symbol=context.symbol,
-                source_title=doc.metadata.get("title", ""),
-                source_type=doc.metadata.get("parser", "unknown"),
-                published_date=str(doc.metadata.get("published_date", "")),
-                source_id=doc.source_id,
-                source_location=source_location or f"chunk {chunk_idx + 1}",
-                topic=topic,
-                text=chunk,
-            )
-
-            raw_facts: list[dict] = call_with_retry(
-                call_fn=self._call,
-                repair_fn=self._repair,
-                prompt=prompt,
-                model_class=None,
-                is_list=True,
-            )
-
-            for raw in raw_facts:
-                try:
-                    fact = EvidenceFact(
-                        run_id=run_id,
-                        source_id=doc.source_id,
-                        **{k: v for k, v in raw.items() if k in EvidenceFact.model_fields},
-                    )
-                    all_facts.append(fact)
-                except Exception as e:
-                    log.warning("Skipping malformed fact: %s — %s", raw, e)
+        for raw in raw_facts:
+            try:
+                sid = raw.pop("source_id", None)
+                if sid not in valid_source_ids:
+                    sid = fallback_source_id
+                fact = EvidenceFact(
+                    run_id=run_id,
+                    source_id=sid,
+                    **{k: v for k, v in raw.items() if k in EvidenceFact.model_fields},
+                )
+                all_facts.append(fact)
+            except Exception as e:
+                log.warning("Skipping malformed fact: %s — %s", raw, e)
 
         return all_facts
 
@@ -173,3 +176,16 @@ class AnthropicProvider:
             except Exception as e:
                 log.warning("Skipping malformed contradiction: %s — %s", raw, e)
         return contradictions
+
+
+def _format_excerpts(chunks: list[dict[str, Any]]) -> str:
+    """Format retrieved chunks into a labelled multi-source excerpt block."""
+    parts: list[str] = []
+    for chunk in chunks:
+        meta = chunk["metadata"]
+        source_id = meta.get("source_id", "unknown")
+        title = meta.get("title", "unknown source")
+        period = meta.get("period_covered", "")
+        header = f"### [source_id: {source_id}] {title}" + (f" — {period}" if period else "")
+        parts.append(f"{header}\n{chunk['text']}")
+    return "\n\n---\n\n".join(parts)
