@@ -1,0 +1,58 @@
+# Source reliability tiers (matches template §2.1)
+# Lower number = higher reliability
+tiers:
+  1:
+    name: regulatory_filings
+    description: "Regulatory and legally accountable disclosures"
+    examples: ["10-K", "10-Q", "8-K", "DEF14A", "20-F", "6-K", "Form4", "13D", "13G", "S-1"]
+    adapters: ["edgar"]
+
+  2:
+    name: direct_operational
+    description: "Direct operational evidence"
+    examples: ["product_page", "pricing_page", "ir_page", "earnings_release"]
+    adapters: ["product_pages", "ir_pages", "earnings"]
+
+  3:
+    name: independent_primary
+    description: "Independent primary research"
+    examples: ["customer_interview", "expert_call"]
+    adapters: []  # manual only in M1
+
+  4:
+    name: credible_third_party
+    description: "Credible third-party analysis"
+    examples: ["industry_research", "trade_publication", "academic_paper"]
+    adapters: ["web_search"]
+
+  5:
+    name: company_narrative
+    description: "Company-controlled narrative"
+    examples: ["investor_presentation", "press_release", "executive_interview"]
+    adapters: ["ir_pages", "web_search"]
+
+  6:
+    name: general_media
+    description: "General media"
+    examples: ["news_article"]
+    adapters: ["web_search"]
+
+  7:
+    name: informal_anecdotal
+    description: "Informal or anecdotal sources"
+    examples: ["social_media", "forum", "glassdoor", "reddit"]
+    adapters: ["web_search"]
+
+  8:
+    name: unknown
+    description: "Source tier not determined"
+    examples: []
+    adapters: []
+
+# Adapter execution order for source acquisition
+adapter_order:
+  - edgar
+  - earnings
+  - ir_pages
+  - product_pages
+  - web_search       # optional, runs last

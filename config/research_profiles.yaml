@@ -1,0 +1,50 @@
+profiles:
+  quick:
+    lookback_years: 1
+    max_filings: 2          # latest 10-K + latest 10-Q
+    max_competitors: 2
+    sections:               # template sections to cover
+      - company_snapshot
+      - core_product
+      - competitive_landscape
+      - key_risks
+    target_words_min: 1500
+    target_words_max: 2500
+    include_proxy: false
+    include_earnings_calls: false
+
+  standard:
+    lookback_years: 5
+    max_filings: 20         # ~5 years of 10-K + 10-Q
+    max_competitors: 5
+    sections:
+      - company_snapshot
+      - core_product
+      - product_market_fit
+      - customer_base
+      - market_structure
+      - competitive_landscape
+      - competitive_advantage
+      - revenue_model
+      - financial_quality
+      - management_governance
+      - current_challenges
+      - growth_opportunities
+      - key_risks
+      - scenarios
+    target_words_min: 4000
+    target_words_max: 7000
+    include_proxy: true
+    include_earnings_calls: true
+
+  deep:
+    lookback_years: 10
+    max_filings: 50
+    max_competitors: 10
+    sections: all
+    target_words_min: 0     # no cap — determined by evidence
+    target_words_max: 0
+    include_proxy: true
+    include_earnings_calls: true
+    include_patents: true
+    include_regulatory: true
