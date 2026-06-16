@@ -9,6 +9,7 @@ from company_research.models.identity import CompanyIdentity
 from company_research.models.value_chain import EntityCandidate
 from company_research.storage.cache import RawCache
 from company_research.storage.database import Database
+from company_research.value_chain.html_extraction import extract_text
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +115,8 @@ def discover_from_sources(
             continue
         try:
             raw_bytes = cache.read(doc["content_hash"])
-            text = raw_bytes.decode("utf-8", errors="replace")
+            # Use clean HTML extraction so entity patterns run on prose, not XBRL markup.
+            text = extract_text(raw_bytes)
         except (FileNotFoundError, Exception) as e:
             log.debug("Cache miss for source %s: %s", src["source_id"], e)
             continue

@@ -13,6 +13,7 @@ from company_research.value_chain.chokepoints import identify_chokepoints
 from company_research.value_chain.decompose import decompose
 from company_research.value_chain.dependency import assess_dependency
 from company_research.value_chain.discovery import discover_from_sources
+from company_research.value_chain.edgar_reverse import discover_reverse_mentions
 from company_research.value_chain.graph import build_graph, export_graph
 from company_research.value_chain.profit_pools import build_profit_pools
 from company_research.value_chain.relationships import build_relationships
@@ -37,17 +38,18 @@ def run_value_chain(
     entity resolution and EDGAR source caching).
 
     Steps:
-      VC-1  Load entity and prior run context
-      VC-2  Decompose into industry template layers
-      VC-3  Discover candidates from cached EDGAR sources
-      VC-4  Resolve candidates to public entities
-      VC-5  Build relationship records
-      VC-6  Assess dependency / bargaining power
-      VC-7  Build profit pool stubs
-      VC-8  Identify chokepoints
-      VC-9  Assemble graph
-      VC-10 Write report and exports
-      VC-11 QA
+      VC-1   Load entity and prior run context
+      VC-2   Decompose into industry template layers
+      VC-3   Discover candidates from cached EDGAR sources (forward)
+      VC-3b  Reverse EDGAR lookup — companies whose filings mention the target
+      VC-4   Resolve candidates to public entities (exact ticker + fuzzy name)
+      VC-5   Build relationship records
+      VC-6   Assess dependency / bargaining power
+      VC-7   Build profit pool stubs
+      VC-8   Identify chokepoints
+      VC-9   Assemble graph
+      VC-10  Write report and exports
+      VC-11  QA
     """
     db_path = output_root / "research.db"
     cache_root = output_root / ".cache"
@@ -103,20 +105,37 @@ def run_value_chain(
     log.info("VC-2: Decomposing value chain layers")
     layers, template = decompose(company, run_id, db, template_name=template_name)
 
-    # VC-3: discover candidates from cached sources
+    # VC-3: discover candidates from cached sources (forward — target's own filings)
     log.info("VC-3: Discovering relationship candidates from EDGAR sources")
     candidates = discover_from_sources(run_id=run_id, db=db, cache=cache)
     for c in candidates:
         db.upsert_vc_candidate(c)
-    log.info("Stored %d candidates", len(candidates))
+    log.info("Stored %d forward candidates", len(candidates))
 
-    # VC-4: resolve candidates to public entities
+    # VC-3b: reverse EDGAR lookup — find filers that name our target company
+    log.info("VC-3b: Reverse EDGAR lookup for '%s' mentions", company.issuer_name)
+    reverse_candidates = discover_reverse_mentions(
+        company_name=company.issuer_name,
+        run_id=run_id,
+        as_of=as_of,
+        db=db,
+        target_cik=company.cik,
+    )
+    for c in reverse_candidates:
+        db.upsert_vc_candidate(c)
+    candidates.extend(reverse_candidates)
+    log.info(
+        "Total candidates after reverse lookup: %d (%d forward + %d reverse)",
+        len(candidates), len(candidates) - len(reverse_candidates), len(reverse_candidates),
+    )
+
+    # VC-4: resolve candidates to public entities (exact ticker + fuzzy name fallback)
     log.info("VC-4: Resolving candidates to EDGAR entities")
-    resolved_pairs = resolve_candidates(candidates, db, max_resolve=40)
+    resolved_pairs = resolve_candidates(candidates, db, max_resolve=80)
     resolved_count = sum(1 for _, e in resolved_pairs if e is not None)
     log.info("Resolved %d / %d candidates", resolved_count, len(resolved_pairs))
 
-    # Collect entity map
+    # Collect entity map (pre-resolved reverse candidates are returned with entity populated)
     entities: dict[str, PublicEntityIdentity] = {target_entity.entity_id: target_entity}
     for candidate, entity in resolved_pairs:
         if entity is not None:
