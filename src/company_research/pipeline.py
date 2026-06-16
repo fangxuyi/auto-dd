@@ -4,6 +4,7 @@ import logging
 import subprocess
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from company_research.analysis.sections import analyze_all_sections
 from company_research.config import settings
@@ -374,6 +375,45 @@ def _run(
         sources=fetch_detail,
     )
 
+    return _run_analysis(
+        symbol=symbol,
+        as_of=as_of,
+        lookback_years=lookback_years,
+        out_dir=out_dir,
+        profile=profile,
+        dry_run=dry_run,
+        effective_rag_top_k=effective_rag_top_k,
+        company=company,
+        run=run,
+        db=db,
+        cache=cache,
+        vector_store=vector_store,
+        llm=llm,
+        flow=flow,
+    )
+
+
+def _run_analysis(
+    *,
+    symbol: str,
+    as_of: date,
+    lookback_years: int,
+    out_dir: Path,
+    profile: dict,
+    dry_run: bool,
+    effective_rag_top_k: int,
+    company: Any,
+    run: ResearchRun,
+    db: Any,
+    cache: Any,
+    vector_store: Any,
+    llm: Any,
+    flow: Any,
+) -> ResearchRun:
+    """Steps 5–12: fact extraction → analysis → report → QA → export.
+
+    Called from both _run() (full pipeline) and report_only() (RAG-only).
+    """
     # Step 5: XBRL metrics
     log.info("Step 5/12 — XBRL financial metric extraction")
     s5 = flow.begin("5", "XBRL Metric Extraction")
@@ -547,6 +587,101 @@ def _run(
         )
 
     return run
+
+
+def report_only(
+    symbol: str,
+    depth: str,
+    as_of: date,
+    lookback_years: int,
+    output_root: Path,
+    dry_run: bool = False,
+    rag_top_k: int | None = None,
+) -> ResearchRun:
+    """Generate a report from the existing RAG — skip all source fetching and indexing.
+
+    Uses whatever documents are already in the VectorStore for `symbol` and runs
+    Steps 5-12 (XBRL → fact extraction → analysis → report → QA → export) on a
+    fresh run record. The output directory is the same as a normal analyze() run
+    so HTML conversion and the serve command work unchanged.
+    """
+    profile = settings.profile(depth)
+    out_dir = output_root / symbol.upper() / as_of.isoformat()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    file_handler = _attach_file_log(out_dir / "run.log")
+    try:
+        effective_rag_top_k = rag_top_k if rag_top_k is not None else profile.get("rag_top_k", 12)
+        chunk_size = profile.get("chunk_size", 2800)
+        chunk_overlap = profile.get("chunk_overlap", 350)
+
+        db = Database(output_root / "research.db")
+        cache = RawCache(output_root / ".cache")
+        vector_store = VectorStore(
+            base_dir=output_root, symbol=symbol,
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+        )
+
+        if dry_run:
+            from company_research.llm.dry_run import DryRunProvider
+            llm = DryRunProvider(prompts_dir=out_dir / "prompts")
+        else:
+            llm = AnthropicProvider()
+
+        _log_run_header(
+            symbol=symbol, depth=depth, as_of=as_of,
+            lookback_years=lookback_years, model_id=settings.model_id,
+            dry_run=dry_run, rag_top_k=effective_rag_top_k, out_dir=out_dir,
+        )
+        log.info("report-only mode: skipping source fetch/index, RAG has %d chunks", vector_store.count)
+
+        company = resolve(symbol)
+        db.upsert_company(company)
+
+        run = ResearchRun(
+            symbol=symbol.upper(),
+            depth=depth,
+            as_of_date=as_of,
+            lookback_years=lookback_years,
+            model_id=settings.model_id,
+            prompt_version=prompt_version("extract_facts"),
+            code_commit=_git_commit(),
+            config_hash=settings.config_hash(),
+            output_dir=str(out_dir),
+        )
+        db.insert_run(run)
+
+        flow = RunFlowRecorder(
+            run_id=run.run_id,
+            symbol=symbol.upper(),
+            depth=depth,
+            as_of_date=as_of.isoformat(),
+            dry_run=dry_run,
+            model_id=settings.model_id,
+        )
+        flow.skip("1b", "External Source Discovery", "report-only mode")
+        flow.skip("1c", "Peer Selection", "report-only mode")
+        flow.skip("2", "EDGAR Source Acquisition", "report-only mode")
+        flow.skip("3-4", "Fetch / Parse / Index", "report-only mode")
+
+        return _run_analysis(
+            symbol=symbol,
+            as_of=as_of,
+            lookback_years=lookback_years,
+            out_dir=out_dir,
+            profile=profile,
+            dry_run=dry_run,
+            effective_rag_top_k=effective_rag_top_k,
+            company=company,
+            run=run,
+            db=db,
+            cache=cache,
+            vector_store=vector_store,
+            llm=llm,
+            flow=flow,
+        )
+    finally:
+        _detach_file_log(file_handler)
 
 
 def _log_run_header(
