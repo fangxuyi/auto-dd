@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -25,22 +25,10 @@ def apple() -> CompanyIdentity:
 
 
 @pytest.fixture()
-def mock_cache() -> MagicMock:
+def mock_cache():
+    from unittest.mock import MagicMock
     return MagicMock()
 
-
-_FAKE_PEER_HITS = [
-    {"title": "Apple's main competitors are Microsoft and Samsung", "href": "https://example.com/1", "body": "Microsoft Corp and Samsung Electronics are frequently compared to Apple Inc."},
-    {"title": "Google vs Apple comparison", "href": "https://example.com/2", "body": "Alphabet Inc Google competes with Apple in mobile and cloud."},
-]
-
-
-def _make_ddgs_mock(hits: list[dict]) -> "MagicMock":
-    m = MagicMock()
-    m.__enter__ = lambda self: m
-    m.__exit__ = lambda *a: False
-    m.text.return_value = hits
-    return m
 
 _MSFT_TICKER_ENTRY = {"ticker": "MSFT", "cik_str": 789019, "title": "MICROSOFT CORP"}
 _GOOG_TICKER_ENTRY = {"ticker": "GOOGL", "cik_str": 1652044, "title": "ALPHABET INC"}
@@ -65,7 +53,6 @@ class TestPeerSelector:
         from company_research.sources.peer_selector import PeerSelector
 
         with (
-            patch("ddgs.DDGS", return_value=_make_ddgs_mock(_FAKE_PEER_HITS)),
             patch("company_research.sources.peer_selector.lookup_by_name") as mock_lookup,
             patch("company_research.identity.edgar.get_submissions") as mock_subs,
         ):
@@ -91,9 +78,14 @@ class TestPeerSelector:
         _AAPL_ENTRY = {"ticker": "AAPL", "cik_str": 320193, "title": "APPLE INC"}
 
         with (
-            patch("ddgs.DDGS", return_value=_make_ddgs_mock(_FAKE_PEER_HITS)),
-            patch("company_research.sources.peer_selector.lookup_by_name", return_value=[_AAPL_ENTRY]),
+            patch("company_research.sources.peer_selector.lookup_by_name") as mock_lookup,
+            patch("company_research.identity.edgar.get_submissions", return_value=_FAKE_SUBMISSIONS),
         ):
+            # If DDG returns anything with "apple" in the name, resolve it to AAPL
+            mock_lookup.side_effect = lambda name, max_results=5: (
+                [_AAPL_ENTRY] if "apple" in name.lower() else
+                [_MSFT_TICKER_ENTRY] if "microsoft" in name.lower() else []
+            )
             selector = PeerSelector(cache=mock_cache, max_peers=5, max_peer_filings=2)
             results = selector.select(apple, cutoff=date(2026, 6, 15))
 
@@ -110,7 +102,6 @@ class TestPeerSelector:
             return [{"ticker": f"PEER{n}", "cik_str": 1000000 + n, "title": f"Peer {n} Corp"}]
 
         with (
-            patch("ddgs.DDGS", return_value=_make_ddgs_mock(_FAKE_PEER_HITS)),
             patch("company_research.sources.peer_selector.lookup_by_name") as mock_lookup,
             patch("company_research.identity.edgar.get_submissions", return_value=_FAKE_SUBMISSIONS),
         ):
@@ -124,7 +115,6 @@ class TestPeerSelector:
         from company_research.sources.peer_selector import PeerSelector
 
         with (
-            patch("ddgs.DDGS", return_value=_make_ddgs_mock(_FAKE_PEER_HITS)),
             patch("company_research.sources.peer_selector.lookup_by_name", return_value=[_MSFT_TICKER_ENTRY]),
             patch("company_research.identity.edgar.get_submissions", return_value=_FAKE_SUBMISSIONS),
         ):
@@ -137,10 +127,7 @@ class TestPeerSelector:
     def test_select_skips_unresolvable_candidates(self, apple, mock_cache):
         from company_research.sources.peer_selector import PeerSelector
 
-        with (
-            patch("ddgs.DDGS", return_value=_make_ddgs_mock(_FAKE_PEER_HITS)),
-            patch("company_research.sources.peer_selector.lookup_by_name", return_value=[]),
-        ):
+        with patch("company_research.sources.peer_selector.lookup_by_name", return_value=[]):
             selector = PeerSelector(cache=mock_cache, max_peers=5, max_peer_filings=2)
             results = selector.select(apple, cutoff=date(2026, 6, 15))
 
@@ -149,9 +136,8 @@ class TestPeerSelector:
     def test_select_graceful_on_ddg_failure(self, apple, mock_cache):
         from company_research.sources.peer_selector import PeerSelector
 
-        failing_mock = _make_ddgs_mock([])
-        failing_mock.text.side_effect = Exception("network error")
-        with patch("ddgs.DDGS", return_value=failing_mock):
+        # Simulate DDG being completely unavailable at the internal helper level
+        with patch("company_research.sources.peer_selector._ddg_snippets", side_effect=Exception("network error")):
             selector = PeerSelector(cache=mock_cache, max_peers=5, max_peer_filings=2)
             results = selector.select(apple, cutoff=date(2026, 6, 15))
 
@@ -161,7 +147,6 @@ class TestPeerSelector:
         from company_research.sources.peer_selector import PeerSelector
 
         with (
-            patch("ddgs.DDGS", return_value=_make_ddgs_mock(_FAKE_PEER_HITS)),
             patch("company_research.sources.peer_selector.lookup_by_name", return_value=[_MSFT_TICKER_ENTRY]),
             patch("company_research.sources.edgar.get_submissions", side_effect=Exception("EDGAR down")),
         ):
