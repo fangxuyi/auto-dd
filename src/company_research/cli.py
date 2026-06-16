@@ -211,6 +211,128 @@ def compare(
         sys.exit(1)
 
 
+@cli.command("value-chain")
+@click.argument("symbol")
+@click.option("--depth", default="standard", type=click.Choice(["quick", "standard", "deep"]))
+@click.option("--as-of", "as_of", default=None, help="Analysis date (YYYY-MM-DD).")
+@click.option("--output", "output_dir", default="./research", type=click.Path())
+@click.option("--template", "template_name", default=None, help="Industry template override.")
+@click.pass_context
+def value_chain(
+    ctx: click.Context,
+    symbol: str,
+    depth: str,
+    as_of: str | None,
+    output_dir: str,
+    template_name: str | None,
+) -> None:
+    """Map a company's upstream/downstream value chain from EDGAR evidence."""
+    from company_research.pipeline_value_chain import run_value_chain
+
+    as_of_date = date.fromisoformat(as_of) if as_of else date.today()
+    out = Path(output_dir)
+    console.print(
+        f"[bold]Value Chain[/bold] [cyan]{symbol.upper()}[/cyan] | "
+        f"depth={depth} | as-of={as_of_date}"
+    )
+
+    try:
+        result = run_value_chain(
+            symbol=symbol,
+            depth=depth,
+            as_of=as_of_date,
+            output_root=out,
+            template_name=template_name,
+        )
+        out_dir = out / symbol.upper() / as_of_date.isoformat()
+        console.print(f"\n[green]✓[/green] Value chain complete — {out_dir}")
+        console.print(
+            f"  template: {result['template']} | layers: {result['layers']} | "
+            f"candidates: {result['candidates_discovered']} | "
+            f"resolved: {result['candidates_resolved']} | "
+            f"relationships: {result['relationships']} | "
+            f"graph nodes: {result['graph_nodes']} | confirmed edges: {result['confirmed_edges']}"
+        )
+        if not result["qa_passed"]:
+            for failure in result["qa_failures"]:
+                console.print(f"  [yellow]⚠[/yellow] QA: {failure}")
+    except RuntimeError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]✗ Value chain failed:[/red] {e}")
+        sys.exit(1)
+
+
+@cli.command("relationships")
+@click.argument("symbol")
+@click.option("--type", "rel_type", default=None, help="Filter by relationship type (e.g. SUPPLIES).")
+@click.option("--status", default=None, help="Filter by status (e.g. confirmed_direct).")
+@click.option("--output", "output_dir", default="./research", type=click.Path())
+@click.pass_context
+def relationships(
+    ctx: click.Context,
+    symbol: str,
+    rel_type: str | None,
+    status: str | None,
+    output_dir: str,
+) -> None:
+    """List value chain relationships for a company."""
+    import json
+    from company_research.storage.database import Database
+
+    db = Database(Path(output_dir) / "research.db")
+    run = db.get_latest_run(symbol)
+    if run is None:
+        console.print(f"[red]No run found for {symbol}. Run value-chain first.[/red]")
+        sys.exit(1)
+
+    rels = db.get_vc_relationships(run["run_id"])
+    if rel_type:
+        rels = [r for r in rels if r.get("relationship_type") == rel_type.upper()]
+    if status:
+        rels = [r for r in rels if r.get("current_status") == status]
+
+    console.print(f"\n[bold]Relationships for {symbol.upper()}[/bold] ({len(rels)} found)\n")
+    for r in rels:
+        conf = r.get("confidence", "unknown")
+        rtype = r.get("relationship_type", "")
+        cur_status = r.get("current_status", "")
+        console.print(f"  [{conf}] {rtype} — {cur_status}")
+
+
+@cli.command("graph")
+@click.argument("symbol")
+@click.option("--format", "fmt", default="json", type=click.Choice(["json", "csv"]))
+@click.option("--output", "output_dir", default="./research", type=click.Path())
+@click.option("--as-of", "as_of", default=None)
+@click.pass_context
+def graph(
+    ctx: click.Context,
+    symbol: str,
+    fmt: str,
+    output_dir: str,
+    as_of: str | None,
+) -> None:
+    """Show or export the value chain graph for a company."""
+    as_of_date = date.fromisoformat(as_of) if as_of else date.today()
+    out_dir = Path(output_dir) / symbol.upper() / as_of_date.isoformat()
+    graph_json = out_dir / "value_chain_graph.json"
+    nodes_csv = out_dir / "value_chain_nodes.csv"
+    edges_csv = out_dir / "value_chain_edges.csv"
+
+    if fmt == "json":
+        if not graph_json.exists():
+            console.print(f"[red]No graph found at {graph_json}. Run value-chain first.[/red]")
+            sys.exit(1)
+        console.print(graph_json.read_text())
+    else:
+        for csv_path in (nodes_csv, edges_csv):
+            if csv_path.exists():
+                console.print(f"\n[bold]{csv_path.name}[/bold]")
+                console.print(csv_path.read_text())
+
+
 @cli.command("to-html")
 @click.argument("report_md", type=click.Path(exists=True))
 @click.option(

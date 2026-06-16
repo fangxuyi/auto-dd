@@ -175,6 +175,177 @@ CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source_id);
 CREATE INDEX IF NOT EXISTS idx_sources_run ON sources(run_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_run ON metrics(run_id);
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
+
+-- ── value chain tables ────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS vc_entities (
+    entity_id TEXT PRIMARY KEY,
+    legal_name TEXT NOT NULL,
+    common_name TEXT,
+    ticker TEXT,
+    exchange TEXT,
+    country TEXT,
+    security_type TEXT,
+    primary_listing INTEGER DEFAULT 1,
+    adr_status INTEGER DEFAULT 0,
+    operating_subsidiary TEXT,
+    ultimate_public_parent TEXT,
+    regulator_id TEXT,
+    isin TEXT,
+    active_listing INTEGER DEFAULT 1,
+    as_of_date TEXT,
+    aliases TEXT DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS vc_entity_aliases (
+    alias_id TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    alias_type TEXT,
+    FOREIGN KEY (entity_id) REFERENCES vc_entities(entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS vc_layers (
+    layer_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    layer_name TEXT NOT NULL,
+    description TEXT,
+    layer_order INTEGER DEFAULT 0,
+    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS vc_relationship_candidates (
+    candidate_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    raw_name TEXT NOT NULL,
+    normalized_name TEXT,
+    source_id TEXT,
+    source_excerpt TEXT,
+    proposed_layer TEXT,
+    proposed_relationship_type TEXT,
+    resolved_entity_id TEXT,
+    resolution_status TEXT DEFAULT 'unresolved',
+    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS vc_relationships (
+    relationship_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    source_entity_id TEXT NOT NULL,
+    target_entity_id TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    value_chain_layer TEXT,
+    product_or_service TEXT,
+    geography TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    current_status TEXT DEFAULT 'unverified_candidate',
+    evidence_status TEXT DEFAULT 'unverified',
+    confidence TEXT DEFAULT 'unknown',
+    materiality TEXT DEFAULT 'unknown',
+    exclusivity INTEGER,
+    source_ids TEXT DEFAULT '[]',
+    source_locations TEXT DEFAULT '[]',
+    last_verified_date TEXT,
+    analyst_notes TEXT,
+    reverse_verified INTEGER DEFAULT 0,
+    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS vc_relationship_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    relationship_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_location TEXT,
+    excerpt TEXT,
+    evidence_status TEXT DEFAULT 'unverified',
+    direction TEXT DEFAULT 'target_first',
+    verified_date TEXT,
+    FOREIGN KEY (relationship_id) REFERENCES vc_relationships(relationship_id)
+);
+
+CREATE TABLE IF NOT EXISTS vc_dependency_assessments (
+    assessment_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    relationship_id TEXT NOT NULL,
+    target_dependency_score INTEGER,
+    counterparty_dependency_score INTEGER,
+    target_dependency_rationale TEXT,
+    counterparty_dependency_rationale TEXT,
+    switching_cost_notes TEXT,
+    alternatives_exist INTEGER,
+    qualification_time_months INTEGER,
+    contract_duration_months INTEGER,
+    confidence TEXT DEFAULT 'unknown',
+    FOREIGN KEY (relationship_id) REFERENCES vc_relationships(relationship_id)
+);
+
+CREATE TABLE IF NOT EXISTS vc_profit_pool_assessments (
+    assessment_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    layer_name TEXT NOT NULL,
+    representative_companies TEXT DEFAULT '[]',
+    gross_margin_range TEXT,
+    operating_margin_range TEXT,
+    roic_range TEXT,
+    capital_intensity TEXT DEFAULT 'unknown',
+    concentration TEXT DEFAULT 'unknown',
+    pricing_power TEXT DEFAULT 'unknown',
+    trend TEXT DEFAULT 'unknown',
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vc_chokepoints (
+    chokepoint_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    chokepoint TEXT NOT NULL,
+    owner_or_controller TEXT,
+    affected_product TEXT,
+    failure_mechanism TEXT,
+    replacement_time TEXT,
+    financial_effect TEXT,
+    early_warning_indicators TEXT DEFAULT '[]',
+    mitigation TEXT,
+    confidence TEXT DEFAULT 'unknown'
+);
+
+CREATE TABLE IF NOT EXISTS vc_graph_nodes (
+    node_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    entity_name TEXT NOT NULL,
+    entity_type TEXT,
+    public_status TEXT DEFAULT 'unknown',
+    ticker TEXT,
+    exchange TEXT,
+    country TEXT,
+    industry TEXT,
+    value_chain_layers TEXT DEFAULT '[]',
+    ultimate_public_parent TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS vc_graph_edges (
+    edge_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    source_node_id TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    product_or_service TEXT,
+    status TEXT DEFAULT 'unverified_candidate',
+    confidence TEXT DEFAULT 'unknown',
+    materiality TEXT DEFAULT 'unknown',
+    start_date TEXT,
+    end_date TEXT,
+    source_ids TEXT DEFAULT '[]',
+    last_verified_date TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vc_relationships_run ON vc_relationships(run_id);
+CREATE INDEX IF NOT EXISTS idx_vc_candidates_run ON vc_relationship_candidates(run_id);
+CREATE INDEX IF NOT EXISTS idx_vc_entities_ticker ON vc_entities(ticker);
 """
 
 
@@ -295,6 +466,24 @@ class Database:
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM documents WHERE content_hash=?", (content_hash,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_document_by_source_id(self, source_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM documents WHERE source_id=? LIMIT 1", (source_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_document_by_url(self, url: str) -> dict | None:
+        """Find a cached document by source URL (joins sources → documents across all runs)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT d.* FROM documents d
+                   JOIN sources s ON d.source_id = s.source_id
+                   WHERE s.url=? LIMIT 1""",
+                (url,),
             ).fetchone()
             return dict(row) if row else None
 
@@ -513,5 +702,185 @@ class Database:
                    WHERE r.symbol=? AND s.published_date > ?
                    ORDER BY s.published_date DESC""",
                 (symbol.upper(), since_date),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ── value chain ───────────────────────────────────────────────────────────
+
+    def upsert_vc_entity(self, entity: "PublicEntityIdentity") -> None:
+        import json as _json
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_entities VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(entity_id) DO UPDATE SET
+                     legal_name=excluded.legal_name, common_name=excluded.common_name,
+                     ticker=excluded.ticker, exchange=excluded.exchange,
+                     ultimate_public_parent=excluded.ultimate_public_parent,
+                     active_listing=excluded.active_listing""",
+                (
+                    entity.entity_id, entity.legal_name, entity.common_name,
+                    entity.ticker, entity.exchange, entity.country,
+                    entity.security_type, int(entity.primary_listing), int(entity.adr_status),
+                    entity.operating_subsidiary, entity.ultimate_public_parent,
+                    entity.regulator_id, entity.isin, int(entity.active_listing),
+                    entity.as_of_date.isoformat() if entity.as_of_date else None,
+                    _json.dumps(entity.aliases),
+                ),
+            )
+
+    def get_vc_entity(self, entity_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM vc_entities WHERE entity_id=?", (entity_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_vc_entity_by_ticker(self, ticker: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM vc_entities WHERE ticker=? LIMIT 1", (ticker.upper(),)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def upsert_vc_layer(self, layer: "ValueChainLayer") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_layers VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(layer_id) DO NOTHING""",
+                (layer.layer_id, layer.run_id, layer.symbol,
+                 layer.layer_name, layer.description, layer.order),
+            )
+
+    def get_vc_layers(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM vc_layers WHERE run_id=? ORDER BY layer_order", (run_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_vc_candidate(self, candidate: "EntityCandidate") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_relationship_candidates VALUES (?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(candidate_id) DO UPDATE SET
+                     resolution_status=excluded.resolution_status,
+                     resolved_entity_id=excluded.resolved_entity_id""",
+                (
+                    candidate.candidate_id, candidate.run_id, candidate.raw_name,
+                    candidate.normalized_name, candidate.source_id, candidate.source_excerpt,
+                    candidate.proposed_layer, candidate.proposed_relationship_type,
+                    candidate.resolved_entity_id, candidate.resolution_status,
+                ),
+            )
+
+    def get_vc_candidates(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM vc_relationship_candidates WHERE run_id=?", (run_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_vc_relationship(self, rel: "CompanyRelationship") -> None:
+        import json as _json
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_relationships VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(relationship_id) DO UPDATE SET
+                     current_status=excluded.current_status,
+                     evidence_status=excluded.evidence_status,
+                     confidence=excluded.confidence,
+                     reverse_verified=excluded.reverse_verified,
+                     last_verified_date=excluded.last_verified_date""",
+                (
+                    rel.relationship_id, rel.run_id, rel.source_entity_id, rel.target_entity_id,
+                    rel.relationship_type, rel.value_chain_layer, rel.product_or_service,
+                    rel.geography,
+                    rel.start_date.isoformat() if rel.start_date else None,
+                    rel.end_date.isoformat() if rel.end_date else None,
+                    rel.current_status, rel.evidence_status, rel.confidence, rel.materiality,
+                    int(rel.exclusivity) if rel.exclusivity is not None else None,
+                    _json.dumps(rel.source_ids), _json.dumps(rel.source_locations),
+                    rel.last_verified_date.isoformat() if rel.last_verified_date else None,
+                    rel.analyst_notes, int(rel.reverse_verified),
+                ),
+            )
+
+    def get_vc_relationships(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM vc_relationships WHERE run_id=?", (run_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_vc_relationship_evidence(self, ev: "RelationshipEvidence") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_relationship_evidence VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(evidence_id) DO NOTHING""",
+                (
+                    ev.evidence_id, ev.relationship_id, ev.source_id, ev.source_location,
+                    ev.excerpt, ev.evidence_status, ev.direction,
+                    ev.verified_date.isoformat() if ev.verified_date else None,
+                ),
+            )
+
+    def upsert_vc_dependency(self, dep: "DependencyAssessment") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_dependency_assessments VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(assessment_id) DO UPDATE SET
+                     target_dependency_score=excluded.target_dependency_score,
+                     counterparty_dependency_score=excluded.counterparty_dependency_score""",
+                (
+                    dep.assessment_id, dep.run_id, dep.relationship_id,
+                    dep.target_dependency_score, dep.counterparty_dependency_score,
+                    dep.target_dependency_rationale, dep.counterparty_dependency_rationale,
+                    dep.switching_cost_notes,
+                    int(dep.alternatives_exist) if dep.alternatives_exist is not None else None,
+                    dep.qualification_time_months, dep.contract_duration_months, dep.confidence,
+                ),
+            )
+
+    def upsert_vc_profit_pool(self, pp: "ProfitPoolAssessment") -> None:
+        import json as _json
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_profit_pool_assessments VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(assessment_id) DO UPDATE SET
+                     gross_margin_range=excluded.gross_margin_range,
+                     operating_margin_range=excluded.operating_margin_range""",
+                (
+                    pp.assessment_id, pp.run_id, pp.layer_name,
+                    _json.dumps(pp.representative_companies),
+                    pp.gross_margin_range, pp.operating_margin_range, pp.roic_range,
+                    pp.capital_intensity, pp.concentration, pp.pricing_power, pp.trend, pp.notes,
+                ),
+            )
+
+    def get_vc_profit_pools(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM vc_profit_pool_assessments WHERE run_id=?", (run_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_vc_chokepoint(self, cp: "ChokepointAssessment") -> None:
+        import json as _json
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_chokepoints VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(chokepoint_id) DO NOTHING""",
+                (
+                    cp.chokepoint_id, cp.run_id, cp.chokepoint, cp.owner_or_controller,
+                    cp.affected_product, cp.failure_mechanism, cp.replacement_time,
+                    cp.financial_effect, _json.dumps(cp.early_warning_indicators),
+                    cp.mitigation, cp.confidence,
+                ),
+            )
+
+    def get_vc_chokepoints(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM vc_chokepoints WHERE run_id=?", (run_id,)
             ).fetchall()
             return [dict(r) for r in rows]

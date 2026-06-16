@@ -1,0 +1,76 @@
+name: healthcare
+description: >
+  Healthcare companies including pharma, medtech, diagnostics, and health IT.
+  Upstream inputs include research tools, API/ingredient suppliers, CROs, CMOs,
+  and regulatory agencies. Downstream through distributors, GPOs, payers, providers.
+
+layers:
+  - name: research_tools_and_ip
+    order: 1
+    description: Research reagents, genomics tools, licensed IP and patents, CROs
+    relationship_types: [SUPPLIES, LICENSES_IP_TO, PROVIDES_DATA_TO]
+
+  - name: api_and_ingredients
+    order: 2
+    description: Active pharmaceutical ingredients, biologics, and specialty chemicals
+    relationship_types: [SUPPLIES]
+
+  - name: cmo_and_manufacturing
+    order: 3
+    description: Contract manufacturing organizations and fill-finish
+    relationship_types: [CONTRACT_MANUFACTURES_FOR]
+
+  - name: regulatory_approval
+    order: 4
+    description: FDA, EMA, and other regulatory bodies (not companies, but a required gate)
+    is_gate: true
+
+  - name: company
+    order: 5
+    description: Drug/device developer, manufacturer, and commercial operations
+    is_target: true
+
+  - name: distribution
+    order: 6
+    description: Specialty distributors, wholesalers, 3PLs, and GPOs
+    relationship_types: [DISTRIBUTES, LOGISTICS_PROVIDER_TO]
+
+  - name: payers_and_pbms
+    order: 7
+    description: Insurers, PBMs, and government payers determining reimbursement
+    relationship_types: [CUSTOMER_OF]
+
+  - name: providers
+    order: 8
+    description: Hospitals, physician groups, pharmacies, and IDNs
+    relationship_types: [CUSTOMER_OF]
+
+  - name: patients
+    order: 9
+    description: End patients
+    relationship_types: [CUSTOMER_OF]
+
+relationship_types_used:
+  - SUPPLIES
+  - CONTRACT_MANUFACTURES_FOR
+  - LICENSES_IP_TO
+  - PROVIDES_DATA_TO
+  - DISTRIBUTES
+  - LOGISTICS_PROVIDER_TO
+  - CUSTOMER_OF
+  - COMPETES_WITH
+
+common_bottlenecks:
+  - Single-source API supplier
+  - CMO capacity for biologics
+  - PBM formulary placement
+  - Regulatory approval timelines
+
+suggested_queries:
+  upstream:
+    - '"{company}" API supplier manufacturer'
+    - '"{company}" CRO CMO contract'
+    - 'site:sec.gov "{company}" supply agreement API'
+  downstream:
+    - '"{company}" distributor GPO'
+    - '"{company}" payer formulary'

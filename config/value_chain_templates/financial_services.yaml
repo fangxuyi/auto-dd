@@ -1,0 +1,69 @@
+name: financial_services
+description: >
+  Financial services including banks, fintechs, asset managers, insurance, and exchanges.
+  Upstream inputs are funding, technology infrastructure, and data. Downstream through
+  distribution channels to institutional and retail end customers.
+
+layers:
+  - name: funding_and_capital
+    order: 1
+    description: Wholesale funding, central bank facilities, capital markets
+    relationship_types: [SUPPLIES]
+
+  - name: core_infrastructure
+    order: 2
+    description: Core banking systems, clearing, settlement, and payments rails
+    typical_companies: [FIS, FISV, V, MA, GPN]
+    relationship_types: [SUPPLIES, HOSTS, INTEGRATES]
+
+  - name: data_and_analytics
+    order: 3
+    description: Market data, credit bureaus, analytics, and risk models
+    typical_companies: [SPGI, MCO, ICE, MSCI, TRI]
+    relationship_types: [PROVIDES_DATA_TO, SUPPLIES]
+
+  - name: company
+    order: 4
+    description: The financial institution's own balance sheet and services
+    is_target: true
+
+  - name: distribution_channels
+    order: 5
+    description: Brokers, RIAs, advisors, bancassurance, and digital channels
+    relationship_types: [DISTRIBUTES, RESELLS, CHANNEL_PARTNER_OF]
+
+  - name: institutional_customers
+    order: 6
+    description: Corporations, asset managers, and institutional investors
+    relationship_types: [CUSTOMER_OF]
+
+  - name: retail_customers
+    order: 7
+    description: Individual consumers and small businesses
+    relationship_types: [CUSTOMER_OF]
+
+relationship_types_used:
+  - SUPPLIES
+  - HOSTS
+  - INTEGRATES
+  - PROVIDES_DATA_TO
+  - DISTRIBUTES
+  - RESELLS
+  - CHANNEL_PARTNER_OF
+  - CUSTOMER_OF
+  - COMPETES_WITH
+
+common_bottlenecks:
+  - Payment network duopoly (Visa/Mastercard)
+  - Core banking system vendor lock-in
+  - Credit bureau data dependency
+  - Regulatory capital requirements
+
+suggested_queries:
+  upstream:
+    - '"{company}" technology vendor core banking'
+    - '"{company}" data provider market data'
+    - 'site:sec.gov "{company}" technology agreement'
+  downstream:
+    - '"{company}" distribution channel broker'
+    - '"{company}" institutional client'
