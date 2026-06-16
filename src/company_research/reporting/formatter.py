@@ -4,17 +4,6 @@ import re
 from pathlib import Path
 
 
-_SECTION_LABELS: dict[str, str] = {
-    "company_snapshot": "Company Snapshot",
-    "core_product": "Core Product",
-    "competitive_landscape": "Competitive Landscape",
-    "financial_overview": "Financial Overview",
-    "risk_profile": "Risk Profile",
-    "management": "Management",
-    "value_chain": "Value Chain",
-}
-
-
 def write_report(
     report_md: str,
     sources: list[dict],
@@ -110,10 +99,8 @@ def _resolve_citations(
         short = title[:60] + ("…" if len(title) > 60 else "")
         return f"[{short}, {date}]" if date else f"[{short}]"
 
-    def _format_conclusion(c: dict) -> str:
-        section = c.get("section", "")
-        label = _SECTION_LABELS.get(section, section.replace("_", " ").title())
-        return f"[{label} analysis]"
+    def _format_conclusion(_: dict) -> str:
+        return ""  # strip bare conclusion-id citations — they're internal references
 
     # Pass 1: canonical [src:SOURCE_ID]
     text = re.sub(r"\[src:([^\]]+)\]", lambda m: _format_source(m.group(1)), text)

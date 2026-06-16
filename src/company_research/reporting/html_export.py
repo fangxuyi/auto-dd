@@ -1522,27 +1522,16 @@ def convert(
         except Exception:
             pass
 
-    # Sources tab: show everything currently indexed in the own-company VectorStore
-    # (accumulates across runs) rather than just the 7 sources from this single run.
+    # Sources tab: use sources.json written by export_run (symbol-wide, all runs).
+    # Preferred over VectorStore.list_documents() because sources.json includes
+    # 10-Ks and other filings indexed in any prior run for the symbol.
     sources_data: list[dict] | None = None
-    try:
-        from company_research.storage.vectorstore import VectorStore
-        output_root = run_dir.parent.parent   # research/<SYMBOL>/<date>/ → research/
-        symbol_name = run_dir.parent.name
-        vs = VectorStore(base_dir=output_root, symbol=symbol_name)
-        vs_docs = vs.list_documents()
-        if vs_docs:
-            sources_data = vs_docs
-    except Exception:
-        pass
-    # Fall back to sources.json if VectorStore unavailable
-    if not sources_data:
-        sources_path = run_dir / "sources.json"
-        if sources_path.exists():
-            try:
-                sources_data = json.loads(sources_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+    sources_path = run_dir / "sources.json"
+    if sources_path.exists():
+        try:
+            sources_data = json.loads(sources_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
 
     contradictions_data: list[dict] | None = None
     contradictions_path = run_dir / "contradictions.json"
