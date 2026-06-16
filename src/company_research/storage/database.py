@@ -457,3 +457,61 @@ class Database:
                 "SELECT * FROM peers WHERE run_id=?", (run_id,)
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # --- run queries ---
+
+    def get_latest_run(self, symbol: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM runs WHERE symbol=? AND status IN ('completed','partial')
+                   ORDER BY as_of_date DESC, started_at DESC LIMIT 1""",
+                (symbol.upper(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_run_by_id(self, run_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_runs(self, symbol: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM runs WHERE symbol=? ORDER BY as_of_date DESC, started_at DESC",
+                (symbol.upper(),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # --- metric queries ---
+
+    def get_metrics_by_name(self, run_id: str, name: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM metrics WHERE run_id=? AND name=? ORDER BY period",
+                (run_id, name),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_distinct_metric_names(self, run_id: str) -> list[str]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT name FROM metrics WHERE run_id=? ORDER BY name",
+                (run_id,),
+            ).fetchall()
+            return [r[0] for r in rows]
+
+    # --- sources by date ---
+
+    def get_sources_since(self, symbol: str, since_date: str) -> list[dict]:
+        """Return all sources for symbol whose published_date > since_date."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT s.* FROM sources s
+                   JOIN runs r ON s.run_id = r.run_id
+                   WHERE r.symbol=? AND s.published_date > ?
+                   ORDER BY s.published_date DESC""",
+                (symbol.upper(), since_date),
+            ).fetchall()
+            return [dict(r) for r in rows]

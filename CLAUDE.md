@@ -6,7 +6,7 @@ Reproducible CLI research pipeline that produces cited product-and-business fund
 
 ## Permanent rules
 
-- Read `guidelines/company_product_business_fundamentals_analysis_template_v2.md` before changing any research logic.
+- Read `guidelines/company_product_business_fundamentals_and_value_chain_analysis_template_v3.md` before changing any research logic. The v3 template supersedes v2 and adds Part IX (agent spec) and Part X (value chain).
 - Never generate a fact, quotation, number, or citation not present in the stored evidence. The evidence store is the system of record, not the LLM.
 - Prefer primary sources (SEC filings, regulator databases) over secondary sources.
 - Keep retrieval, extraction, analysis, and writing strictly separate pipeline stages.

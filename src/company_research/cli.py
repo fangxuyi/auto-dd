@@ -91,12 +91,59 @@ def analyze(
 
 @cli.command()
 @click.argument("symbol")
+@click.option("--depth", default="standard", type=click.Choice(["quick", "standard", "deep"]))
+@click.option("--as-of", "as_of", default=None, help="Analysis date (YYYY-MM-DD). Defaults to today.")
+@click.option("--lookback-years", "lookback_years", default=5, type=int)
 @click.option("--output", "output_dir", default="./research", type=click.Path())
+@click.option("--rag-top-k", "rag_top_k", default=None, type=int)
+@click.option("--dry-run", "dry_run", is_flag=True)
 @click.pass_context
-def update(ctx: click.Context, symbol: str, output_dir: str) -> None:
-    """Fetch new sources and update an existing research run."""
-    console.print(f"[yellow]Update mode not yet implemented (Milestone 4).[/yellow]")
-    console.print(f"To re-run a full analysis: company-research analyze {symbol}")
+def update(
+    ctx: click.Context,
+    symbol: str,
+    depth: str,
+    as_of: str | None,
+    lookback_years: int,
+    output_dir: str,
+    rag_top_k: int | None,
+    dry_run: bool,
+) -> None:
+    """Fetch new sources, update an existing run, and produce a diff report."""
+    from company_research.pipeline_update import update as run_update
+    from company_research.storage.export import export_diff
+
+    as_of_date = date.fromisoformat(as_of) if as_of else date.today()
+    out = Path(output_dir)
+    mode_tag = " [yellow][dry-run][/yellow]" if dry_run else ""
+    console.print(
+        f"[bold]Updating[/bold] [cyan]{symbol.upper()}[/cyan] | "
+        f"depth=[yellow]{depth}[/yellow] | as-of={as_of_date}{mode_tag}"
+    )
+
+    try:
+        new_run, diff = run_update(
+            symbol=symbol,
+            depth=depth,
+            as_of=as_of_date,
+            lookback_years=lookback_years,
+            output_root=out,
+            dry_run=dry_run,
+            rag_top_k=rag_top_k,
+        )
+        out_dir = out / symbol.upper() / as_of_date.isoformat()
+        export_diff(diff, out_dir)
+
+        changed = [c for c in diff.changed_conclusions if c.change_type == "changed"]
+        console.print(f"\n[green]✓[/green] Update complete — {out_dir}")
+        console.print(
+            f"  new sources: {diff.new_sources_count} | "
+            f"new facts: {len(diff.new_facts)} | "
+            f"changed conclusions: {len(changed)} | "
+            f"metric changes: {len(diff.changed_metrics)}"
+        )
+    except Exception as e:
+        console.print(f"[red]✗ Update failed:[/red] {e}")
+        sys.exit(1)
 
 
 @cli.command()
@@ -124,10 +171,44 @@ def validate(ctx: click.Context, run_dir: str) -> None:
 @cli.command()
 @click.argument("symbol")
 @click.argument("peers", nargs=-1, required=True)
+@click.option("--depth", default="quick", type=click.Choice(["quick", "standard", "deep"]))
+@click.option("--as-of", "as_of", default=None, help="Analysis date (YYYY-MM-DD).")
+@click.option("--output", "output_dir", default="./research", type=click.Path())
+@click.option("--dry-run", "dry_run", is_flag=True)
 @click.pass_context
-def compare(ctx: click.Context, symbol: str, peers: tuple[str, ...]) -> None:
-    """Compare a company against peers (Milestone 2+)."""
-    console.print(f"[yellow]Compare mode not yet implemented (Milestone 2).[/yellow]")
+def compare(
+    ctx: click.Context,
+    symbol: str,
+    peers: tuple[str, ...],
+    depth: str,
+    as_of: str | None,
+    output_dir: str,
+    dry_run: bool,
+) -> None:
+    """Compare a company against one or more peers side-by-side."""
+    from company_research.pipeline_compare import compare as run_compare
+    from company_research.storage.export import export_compare
+
+    as_of_date = date.fromisoformat(as_of) if as_of else date.today()
+    out = Path(output_dir)
+    symbols = [symbol.upper()] + [p.upper() for p in peers]
+    console.print(f"[bold]Comparing[/bold] {' vs '.join(symbols)} | depth={depth} | as-of={as_of_date}")
+
+    try:
+        result = run_compare(
+            symbols=symbols,
+            output_root=out,
+            depth=depth,
+            as_of=as_of_date,
+            dry_run=dry_run,
+        )
+        syms_tag = "_".join(symbols)
+        compare_dir = out / "comparisons"
+        export_compare(result, compare_dir)
+        console.print(f"[green]✓[/green] Comparison written to {compare_dir}/compare_{syms_tag}.md")
+    except Exception as e:
+        console.print(f"[red]✗ Compare failed:[/red] {e}")
+        sys.exit(1)
 
 
 @cli.command("to-html")
@@ -152,8 +233,9 @@ def to_html(ctx: click.Context, report_md: str, output_html: str | None) -> None
 
 def _print_output_summary(out_dir: Path) -> None:
     files = [
-        "sources.json", "evidence.jsonl", "metrics.csv",
+        "report.md", "sources.json", "evidence.jsonl", "metrics.csv",
         "contradictions.json", "open_questions.json", "qa_report.json",
+        "run_flow.json", "monitoring.json", "peers.json",
     ]
     console.print("\n[bold]Output files:[/bold]")
     for f in files:

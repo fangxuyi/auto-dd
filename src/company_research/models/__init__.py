@@ -1,5 +1,13 @@
 from company_research.models.analysis import Contradiction, SectionConclusion
 from company_research.models.citations import Citation
+from company_research.models.diff import (
+    ConclusionChange,
+    FactChange,
+    MetricChange,
+    MonitoringDashboard,
+    MonitoringIndicator,
+    ResearchDiff,
+)
 from company_research.models.evidence import EvidenceFact, MetricObservation
 from company_research.models.identity import CompanyIdentity, ResearchRun
 from company_research.models.qa import OpenQuestion, QAResult
@@ -22,4 +30,10 @@ __all__ = [
     "Citation",
     "OpenQuestion",
     "QAResult",
+    "ResearchDiff",
+    "MetricChange",
+    "FactChange",
+    "ConclusionChange",
+    "MonitoringDashboard",
+    "MonitoringIndicator",
 ]
