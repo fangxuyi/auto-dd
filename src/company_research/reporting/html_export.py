@@ -1206,11 +1206,11 @@ def _render_sources_panel(sources: list[dict]) -> str:
         title    = html.escape(s.get("title", "—"))
         url      = html.escape(s.get("url") or "")
         stype    = html.escape(s.get("source_type", "—"))
-        pub      = html.escape(s.get("publisher") or "—")
+        pub      = html.escape(s.get("publisher") or "")
         pdate    = html.escape((s.get("published_date") or "—")[:10])
         tier     = s.get("reliability_tier", 0)
         tier_cls = f"tier-{tier}" if 1 <= tier <= 6 else ""
-        tier_lbl = html.escape(_tier_label.get(tier, f"Tier {tier}"))
+        tier_lbl = html.escape(_tier_label.get(tier, f"Tier {tier}")) if tier else "—"
         title_cell = (
             f'<a href="{url}" target="_blank" rel="noopener">{title}</a>'
             if url else title
@@ -1221,7 +1221,9 @@ def _render_sources_panel(sources: list[dict]) -> str:
             f'<td class="src-title">{title_cell}</td>'
             f'<td class="src-publisher">{pub}</td>'
             f'<td class="src-date">{pdate}</td>'
-            f'<td><div class="tier-cell"><div class="tier-dot {tier_cls}"></div>{tier_lbl}</div></td>'
+            f'<td><div class="tier-cell">'
+            f'{"<div class=\"tier-dot " + tier_cls + "\"></div>" if tier_cls else ""}'
+            f'{tier_lbl}</div></td>'
             f"</tr>\n"
         )
 
@@ -1229,7 +1231,7 @@ def _render_sources_panel(sources: list[dict]) -> str:
 <div class="sources-wrap">
   <div class="sources-section-head">
     <h2>Sources</h2>
-    <span class="sources-count">{len(sources)} documents indexed</span>
+    <span class="sources-count">{len(sources)} documents in RAG</span>
   </div>
   <div class="sources-filter-row">
     {filter_btns}
@@ -1352,7 +1354,7 @@ window.GRAPH_DATA = {graph_json};
 <nav class="tab-nav">
   <button class="tab-btn active" data-tab="report">Report</button>
   <button class="tab-btn" data-tab="vc">Value Chain</button>
-  <button class="tab-btn" data-tab="sources">Sources ({src_count})</button>
+  <button class="tab-btn" data-tab="sources">Sources ({src_count} in RAG)</button>
   <button class="tab-btn" data-tab="ask">Ask</button>
 </nav>
 
@@ -1427,13 +1429,27 @@ def convert(
         except Exception:
             pass
 
+    # Sources tab: show everything currently indexed in the own-company VectorStore
+    # (accumulates across runs) rather than just the 7 sources from this single run.
     sources_data: list[dict] | None = None
-    sources_path = run_dir / "sources.json"
-    if sources_path.exists():
-        try:
-            sources_data = json.loads(sources_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    try:
+        from company_research.storage.vectorstore import VectorStore
+        output_root = run_dir.parent.parent   # research/<SYMBOL>/<date>/ → research/
+        symbol_name = run_dir.parent.name
+        vs = VectorStore(base_dir=output_root, symbol=symbol_name)
+        vs_docs = vs.list_documents()
+        if vs_docs:
+            sources_data = vs_docs
+    except Exception:
+        pass
+    # Fall back to sources.json if VectorStore unavailable
+    if not sources_data:
+        sources_path = run_dir / "sources.json"
+        if sources_path.exists():
+            try:
+                sources_data = json.loads(sources_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
 
     out = render_html(data, graph_data=graph_data, sources_data=sources_data, qa_port=qa_port)
 

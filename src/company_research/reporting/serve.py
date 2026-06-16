@@ -106,14 +106,23 @@ class RagServer(HTTPServer):
         return self._vs
 
     def _run_source_titles(self) -> set[str] | None:
-        """Load allowlist of document titles for this run from sources.json."""
+        """Load allowlist of document titles for this run from sources.json.
+
+        Used as a fallback filter for runs indexed before the own/peers split
+        was introduced. For new runs, the own-company VectorStore collection
+        already excludes peer documents so no filtering is needed.
+        """
         sources_path = self.run_dir / "sources.json"
         if not sources_path.exists():
             return None
         try:
             import json
             sources = json.loads(sources_path.read_text(encoding="utf-8"))
-            return {s["title"] for s in sources if "title" in s}
+            # Exclude peer sources — they live in the _peers collection now
+            return {
+                s["title"] for s in sources
+                if "title" in s and not s.get("is_peer", False)
+            }
         except Exception:
             return None
 
@@ -121,8 +130,9 @@ class RagServer(HTTPServer):
         import anthropic
 
         vs = self._get_vs()
-        # Retrieve extra candidates so we still have k after filtering to this run's sources.
-        # Title is stable across runs; source_id is not (generated per-run).
+        # For runs indexed with the own/peers split, the collection only has
+        # own-company docs — no filtering needed. The title allowlist is a
+        # fallback for older runs where peers were mixed into the same collection.
         allowed_titles = self._run_source_titles()
         raw_chunks = vs.retrieve(question, k=k * 4 if allowed_titles else k)
 

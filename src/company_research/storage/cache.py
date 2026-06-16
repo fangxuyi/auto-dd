@@ -36,6 +36,7 @@ class RawCache:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
         return RawDocument(
+            doc_id=content_hash,   # stable: same content → same doc_id → idempotent ChromaDB upsert
             source_id=source_id,
             content_hash=content_hash,
             file_path=str(dest),

@@ -46,7 +46,8 @@ class Settings:
         profiles = self._profiles.get("profiles", {})
         if depth not in profiles:
             raise ValueError(f"Unknown depth '{depth}'. Choose: quick, standard, deep")
-        return profiles[depth]
+        defaults = self._profiles.get("defaults", {})
+        return {**defaults, **profiles[depth]}
 
     def source_tiers(self) -> dict[int, dict[str, Any]]:
         return {int(k): v for k, v in self._source_priority.get("tiers", {}).items()}
