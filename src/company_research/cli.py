@@ -342,15 +342,194 @@ def graph(
     type=click.Path(),
     help="Output HTML path. Defaults to report.html next to the input file.",
 )
+@click.option("--port", default=7234, help="RAG server port shown in HTML instructions.")
 @click.pass_context
-def to_html(ctx: click.Context, report_md: str, output_html: str | None) -> None:
-    """Convert a report.md to a styled, self-contained HTML file."""
+def to_html(ctx: click.Context, report_md: str, output_html: str | None, port: int) -> None:
+    """Convert a report.md to a styled, self-contained HTML file.
+
+    Automatically embeds value_chain_graph.json if found in the same directory.
+    The HTML includes a Q&A tab — start the RAG server first with:
+
+        company-research serve <report_md> [--port PORT]
+    """
     from company_research.reporting.html_export import convert
 
     md_path = Path(report_md)
     html_path = Path(output_html) if output_html else None
-    out = convert(md_path, html_path)
+    out = convert(md_path, html_path, qa_port=port)
     console.print(f"[green]✓[/green] HTML report: {out}")
+    console.print(
+        f"\n[dim]To enable Q&A: [/dim][bold]company-research serve {report_md} --port {port}[/bold]"
+    )
+
+
+@cli.command("serve")
+@click.argument("report_md", type=click.Path(exists=True))
+@click.option("--port", default=7234, help="Port for the local RAG server.")
+@click.option("--no-browser", is_flag=True, help="Don't open the HTML file in a browser.")
+@click.pass_context
+def serve_cmd(ctx: click.Context, report_md: str, port: int, no_browser: bool) -> None:
+    """Start a local RAG Q&A server for an auto-dd research run.
+
+    The server answers questions by retrieving from the run's vector store and
+    calling Claude. The HTML report's Ask tab connects to this server.
+
+    \b
+    Example:
+        company-research serve research/AAPL/2026-06-16/report.md
+    """
+    import time
+    import webbrowser
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    from company_research.reporting.serve import RagServer
+
+    md_path = Path(report_md)
+    run_dir = md_path.parent
+    html_path = md_path.with_suffix(".html")
+
+    # Auto-generate HTML if missing
+    if not html_path.exists():
+        from company_research.reporting.html_export import convert
+        html_path = convert(md_path, qa_port=port)
+        console.print(f"[green]✓[/green] Generated HTML: {html_path}")
+
+    symbol = run_dir.parent.name  # research/<SYMBOL>/<date>/report.md
+
+    server = RagServer(run_dir=run_dir, symbol=symbol, port=port)
+    server.start_background()
+
+    console.print(f"[green]✓[/green] RAG server running at [bold]http://127.0.0.1:{port}[/bold]")
+    console.print(f"  Symbol : [bold]{symbol}[/bold]")
+    console.print(f"  Run dir: {run_dir}")
+    console.print(f"  HTML   : {html_path}")
+    console.print("\nPress [bold]Ctrl-C[/bold] to stop.\n")
+
+    if not no_browser:
+        time.sleep(0.4)
+        webbrowser.open(html_path.resolve().as_uri())
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Server stopped.[/dim]")
+
+
+@cli.command("research")
+@click.argument("symbol")
+@click.option("--depth", default="quick", type=click.Choice(["quick", "standard", "deep"]))
+@click.option("--as-of", "as_of", default=None, help="Analysis date (YYYY-MM-DD). Defaults to today.")
+@click.option("--lookback-years", "lookback_years", default=5, type=int)
+@click.option("--output", "output_dir", default="./research", type=click.Path())
+@click.option("--port", default=7234, help="RAG server port.")
+@click.option("--no-value-chain", "skip_vc", is_flag=True, help="Skip value chain step.")
+@click.option("--no-serve", "skip_serve", is_flag=True, help="Don't start RAG server after generating HTML.")
+@click.pass_context
+def research_cmd(
+    ctx: click.Context,
+    symbol: str,
+    depth: str,
+    as_of: str | None,
+    lookback_years: int,
+    output_dir: str,
+    port: int,
+    skip_vc: bool,
+    skip_serve: bool,
+) -> None:
+    """Full pipeline: analyze → value-chain → HTML → serve.
+
+    \b
+    Example:
+        company-research research AAPL --depth quick
+    """
+    import time
+    import webbrowser
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    from company_research.pipeline import analyze as run_pipeline
+    from company_research.pipeline_value_chain import run_value_chain
+    from company_research.reporting.html_export import convert
+    from company_research.reporting.serve import RagServer
+
+    as_of_date = date.fromisoformat(as_of) if as_of else date.today()
+    out = Path(output_dir)
+    out_dir = out / symbol.upper() / as_of_date.isoformat()
+
+    # ── Step 1: Analyze ──────────────────────────────────────────────────────
+    console.print(
+        f"\n[bold cyan]╔══ Step 1/3 — Analyze[/bold cyan] "
+        f"[cyan]{symbol.upper()}[/cyan] | depth={depth} | as-of={as_of_date}"
+    )
+    try:
+        run_pipeline(
+            symbol=symbol,
+            depth=depth,
+            as_of=as_of_date,
+            lookback_years=lookback_years,
+            output_root=out,
+            dry_run=False,
+        )
+        console.print(f"[green]✓[/green] Analysis complete → {out_dir}")
+    except Exception as e:
+        console.print(f"[red]✗ Analysis failed:[/red] {e}")
+        sys.exit(1)
+
+    # ── Step 2: Value chain ──────────────────────────────────────────────────
+    if not skip_vc:
+        console.print(f"\n[bold cyan]╠══ Step 2/3 — Value Chain[/bold cyan] {symbol.upper()}")
+        try:
+            result = run_value_chain(
+                symbol=symbol,
+                depth=depth,
+                as_of=as_of_date,
+                output_root=out,
+            )
+            console.print(
+                f"[green]✓[/green] Value chain complete "
+                f"({result['graph_nodes']} nodes, {result['confirmed_edges']} edges)"
+            )
+        except Exception as e:
+            console.print(f"[yellow]⚠ Value chain failed (continuing):[/yellow] {e}")
+    else:
+        console.print("\n[dim]╠══ Step 2/3 — Value Chain (skipped)[/dim]")
+
+    # ── Step 3: HTML ─────────────────────────────────────────────────────────
+    console.print(f"\n[bold cyan]╠══ Step 3/3 — HTML[/bold cyan]")
+    md_path   = out_dir / "report.md"
+    html_path = convert(md_path, qa_port=port)
+    console.print(f"[green]✓[/green] HTML → {html_path}")
+
+    console.print(f"\n[bold green]╚══ Done.[/bold green] {symbol.upper()} · {as_of_date}")
+    console.print(f"    Report : {md_path}")
+    console.print(f"    HTML   : {html_path}")
+
+    if skip_serve:
+        console.print(
+            f"\n[dim]To enable Q&A:[/dim] "
+            f"[bold]company-research serve {md_path} --port {port}[/bold]"
+        )
+        return
+
+    # ── Serve ────────────────────────────────────────────────────────────────
+    console.print(f"\n[bold]Starting RAG server on port {port}…[/bold]")
+    server = RagServer(run_dir=out_dir, symbol=symbol, port=port)
+    server.start_background()
+    console.print(f"[green]✓[/green] Server at [bold]http://127.0.0.1:{port}[/bold]")
+    console.print("Press [bold]Ctrl-C[/bold] to stop.\n")
+
+    time.sleep(0.4)
+    webbrowser.open(html_path.resolve().as_uri())
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Server stopped.[/dim]")
 
 
 def _print_output_summary(out_dir: Path) -> None:
