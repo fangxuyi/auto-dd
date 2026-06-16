@@ -20,6 +20,10 @@ from company_research.parsing.xbrl import extract_metrics
 from company_research.reporting.formatter import write_report
 from company_research.reporting.generator import generate_report
 from company_research.sources.edgar import EdgarAdapter
+from company_research.sources.ir_page import IRPageAdapter
+from company_research.sources.peer_selector import PeerSelector
+from company_research.sources.product_page import ProductPageAdapter
+from company_research.sources.web_search import WebSearchAdapter
 from company_research.storage.cache import RawCache
 from company_research.storage.database import Database
 from company_research.storage.export import export_qa, export_run
@@ -153,6 +157,79 @@ def _run(
     db.insert_run(run)
     log.info("Run created: run_id=%s", run.run_id)
 
+    # Step 1b: External source discovery
+    log.info("Step 1b/12 — External source discovery")
+    ext_sources: list[SourceRecord] = []
+
+    if profile.get("enable_ir_pages", True):
+        ir_adapter = IRPageAdapter(cache=cache, max_pages=profile.get("max_ir_pages", 3))
+        try:
+            found = ir_adapter.search(company, cutoff=as_of)
+            ext_sources.extend(found)
+            log.info("IRPageAdapter: %d pages for %s", len(found), company.symbol)
+        except Exception as e:
+            log.warning("IRPageAdapter failed: %s", e)
+
+    if profile.get("enable_product_pages", False):
+        product_adapter = ProductPageAdapter(
+            cache=cache, max_pages=profile.get("max_product_pages", 2)
+        )
+        try:
+            found = product_adapter.search(company, cutoff=as_of)
+            ext_sources.extend(found)
+            log.info("ProductPageAdapter: %d pages for %s", len(found), company.symbol)
+        except Exception as e:
+            log.warning("ProductPageAdapter failed: %s", e)
+
+    if profile.get("enable_web_search", False):
+        web_adapter = WebSearchAdapter(
+            cache=cache,
+            max_results=profile.get("web_search_results_per_query", 3),
+        )
+        try:
+            found = web_adapter.search(company, cutoff=as_of)
+            ext_sources.extend(found)
+            log.info("WebSearchAdapter: %d URLs for %s", len(found), company.symbol)
+        except Exception as e:
+            log.warning("WebSearchAdapter failed: %s", e)
+
+    for src in ext_sources:
+        db.upsert_source(src, run.run_id)
+    log.info("External sources total: %d", len(ext_sources))
+
+    # Step 1c: Peer selection and peer EDGAR acquisition
+    peer_identities: list[CompanyIdentity] = []
+    if profile.get("enable_peer_search", True):
+        log.info("Step 1c/12 — Peer selection (max_peers=%d)", profile.get("max_competitors", 5))
+        peer_selector = PeerSelector(
+            cache=cache,
+            max_peers=profile.get("max_competitors", 5),
+            max_peer_filings=profile.get("max_peer_filings", 3),
+        )
+        try:
+            peer_results = peer_selector.select(company, cutoff=as_of)
+            for peer_identity, peer_sources in peer_results:
+                peer_identities.append(peer_identity)
+                db.upsert_company(peer_identity)
+                for ps in peer_sources:
+                    db.upsert_source(ps, run.run_id)
+                db.upsert_peer(
+                    run.run_id,
+                    peer_identity.symbol,
+                    peer_name=peer_identity.issuer_name,
+                    peer_cik=peer_identity.cik,
+                )
+            if peer_identities:
+                company = company.model_copy(
+                    update={"peers": [p.symbol for p in peer_identities]}
+                )
+                db.upsert_company(company)
+            log.info("Peer selection complete: %d peers resolved", len(peer_identities))
+        except Exception as e:
+            log.warning("Peer selection failed: %s", e)
+    else:
+        log.info("Step 1c/12 — Peer selection skipped (disabled in profile)")
+
     # Step 2: Source acquisition
     log.info("Step 2/12 — Source acquisition (max_filings=%d)", profile.get("max_filings", 20))
     edgar = EdgarAdapter(cache=cache, max_filings=profile.get("max_filings", 20))
@@ -163,17 +240,24 @@ def _run(
     for source in sources:
         db.upsert_source(source, run.run_id)
 
+    # Merge external + EDGAR sources for fetch/parse/index
+    sources = ext_sources + sources
+
+    # Shared HTML adapter for fetching external (non-EDGAR) sources
+    _html_adapter = WebSearchAdapter(cache=cache, max_results=0)
+
     # Step 3+4: Fetch, parse, index
-    log.info("Step 3+4/12 — Fetch, parse, and vector-index %d filings", len(sources))
+    log.info("Step 3+4/12 — Fetch, parse, and vector-index %d sources", len(sources))
     indexed, skipped = 0, 0
     for source in sources:
         log.info("Fetching [%s] %s", source.source_type, source.title)
         try:
-            raw_doc = edgar.fetch(source)
+            _adapter = edgar if source.reliability_tier == 1 else _html_adapter
+            raw_doc = _adapter.fetch(source)
             is_new = db.upsert_document(raw_doc)
             cache_tag = "new" if is_new else "cached"
             log.debug("Document %s (%s, %d bytes)", source.source_id, cache_tag, raw_doc.size_bytes)
-            norm_doc = edgar.normalize(raw_doc)
+            norm_doc = _adapter.normalize(raw_doc)
             n_chunks = vector_store.index_document(
                 doc_id=norm_doc.doc_id,
                 text=norm_doc.text,

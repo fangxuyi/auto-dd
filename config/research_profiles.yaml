@@ -13,6 +13,16 @@ profiles:
     target_words_max: 2500
     include_proxy: false
     include_earnings_calls: false
+    # M3 external sources
+    enable_web_search: false   # skip for speed; quick is orientation-only
+    enable_ir_pages: true
+    enable_product_pages: false
+    enable_peer_search: true
+    enable_peer_llm_ranking: false
+    web_search_results_per_query: 2
+    max_ir_pages: 1
+    max_product_pages: 1
+    max_peer_filings: 2        # filings per peer (latest 10-K + 10-Q)
 
   standard:
     lookback_years: 5
@@ -38,6 +48,16 @@ profiles:
     target_words_max: 7000
     include_proxy: true
     include_earnings_calls: true
+    # M3 external sources
+    enable_web_search: true
+    enable_ir_pages: true
+    enable_product_pages: true
+    enable_peer_search: true
+    enable_peer_llm_ranking: false
+    web_search_results_per_query: 3
+    max_ir_pages: 3
+    max_product_pages: 2
+    max_peer_filings: 3
 
   deep:
     lookback_years: 10
@@ -51,3 +71,13 @@ profiles:
     include_earnings_calls: true
     include_patents: true
     include_regulatory: true
+    # M3 external sources
+    enable_web_search: true
+    enable_ir_pages: true
+    enable_product_pages: true
+    enable_peer_search: true
+    enable_peer_llm_ranking: true
+    web_search_results_per_query: 5
+    max_ir_pages: 8
+    max_product_pages: 5
+    max_peer_filings: 5

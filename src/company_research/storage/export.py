@@ -66,9 +66,10 @@ def export_run(run_id: str, db: Database, out_dir: Path) -> None:
         json.dumps(company_profile, indent=2, default=str), encoding="utf-8"
     )
 
-    # peers.json — placeholder; peer selection added in M3
+    # peers.json
+    peers = db.get_peers(run_id)
     (out_dir / "peers.json").write_text(
-        json.dumps([], indent=2), encoding="utf-8"
+        json.dumps(peers, indent=2, default=str), encoding="utf-8"
     )
 
 

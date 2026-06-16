@@ -160,6 +160,16 @@ CREATE TABLE IF NOT EXISTS open_questions (
     FOREIGN KEY (run_id) REFERENCES runs(run_id)
 );
 
+CREATE TABLE IF NOT EXISTS peers (
+    run_id TEXT NOT NULL,
+    peer_symbol TEXT NOT NULL,
+    peer_name TEXT,
+    peer_cik TEXT,
+    rationale TEXT,
+    PRIMARY KEY (run_id, peer_symbol),
+    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_facts_run ON facts(run_id);
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source_id);
 CREATE INDEX IF NOT EXISTS idx_sources_run ON sources(run_id);
@@ -423,5 +433,27 @@ class Database:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM open_questions WHERE run_id=?", (run_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # --- peers ---
+
+    def upsert_peer(
+        self, run_id: str, peer_symbol: str, peer_name: str = "", peer_cik: str = "", rationale: str = ""
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO peers (run_id, peer_symbol, peer_name, peer_cik, rationale)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(run_id, peer_symbol) DO UPDATE SET
+                     peer_name=excluded.peer_name, peer_cik=excluded.peer_cik,
+                     rationale=excluded.rationale""",
+                (run_id, peer_symbol, peer_name, peer_cik, rationale),
+            )
+
+    def get_peers(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM peers WHERE run_id=?", (run_id,)
             ).fetchall()
             return [dict(r) for r in rows]
