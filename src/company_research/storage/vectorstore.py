@@ -109,6 +109,31 @@ class VectorStore:
             })
         return chunks
 
+    def list_documents(self) -> list[dict]:
+        """Return one metadata record per unique document (deduplicated by title)."""
+        n = self._collection.count()
+        if n == 0:
+            return []
+        seen: dict[str, dict] = {}
+        offset, batch = 0, 500
+        while offset < n:
+            res = self._collection.get(
+                limit=batch, offset=offset, include=["metadatas"]
+            )
+            if not res["metadatas"]:
+                break
+            for m in res["metadatas"]:
+                title = m.get("title", "")
+                if title and title not in seen:
+                    seen[title] = {
+                        "title": title,
+                        "source_type": m.get("source_type", ""),
+                        "published_date": m.get("published_date", ""),
+                        "period_covered": m.get("period_covered", ""),
+                    }
+            offset += batch
+        return sorted(seen.values(), key=lambda d: d.get("published_date", ""), reverse=True)
+
     @property
     def count(self) -> int:
         return self._collection.count()

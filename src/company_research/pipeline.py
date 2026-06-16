@@ -327,19 +327,24 @@ def _run(
             log.debug("Document %s (%s, %d bytes)", source.source_id, cache_tag, raw_doc.size_bytes)
             norm_doc = _adapter.normalize(raw_doc)
             target_vs = peer_vector_store if source.is_peer else vector_store
-            n_chunks = target_vs.index_document(
-                doc_id=norm_doc.doc_id,
-                text=norm_doc.text,
-                metadata={
-                    "source_id": source.source_id,
-                    "title": source.title,
-                    "source_type": source.source_type,
-                    "period_covered": source.period_covered or "",
-                    "published_date": source.published_date.isoformat() if source.published_date else "",
-                },
-            )
-            collection = "peers" if source.is_peer else "own"
-            log.info("Indexed %d chunks from %s into %s collection", n_chunks, source.source_type, collection)
+            if is_new:
+                # doc_id is content_hash so chunk IDs are stable — skip if unchanged
+                n_chunks = target_vs.index_document(
+                    doc_id=norm_doc.doc_id,
+                    text=norm_doc.text,
+                    metadata={
+                        "source_id": source.source_id,
+                        "title": source.title,
+                        "source_type": source.source_type,
+                        "period_covered": source.period_covered or "",
+                        "published_date": source.published_date.isoformat() if source.published_date else "",
+                    },
+                )
+                collection = "peers" if source.is_peer else "own"
+                log.info("Indexed %d chunks from %s into %s collection", n_chunks, source.source_type, collection)
+            else:
+                n_chunks = 0
+                log.info("Skipped indexing %s — content unchanged (cached)", source.title[:60])
             fetch_detail.append({"title": source.title, "type": source.source_type, "chunks": n_chunks, "cache": cache_tag})
             indexed += 1
         except Exception as e:
