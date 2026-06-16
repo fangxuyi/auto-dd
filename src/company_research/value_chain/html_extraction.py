@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import re
+import warnings
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 # Tags whose text content is not human-readable prose
 _SKIP_TAGS = {
