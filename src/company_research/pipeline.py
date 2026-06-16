@@ -213,6 +213,7 @@ def _run(
                 db.upsert_company(peer_identity)
                 for ps in peer_sources:
                     db.upsert_source(ps, run.run_id)
+                ext_sources.extend(peer_sources)
                 db.upsert_peer(
                     run.run_id,
                     peer_identity.symbol,
