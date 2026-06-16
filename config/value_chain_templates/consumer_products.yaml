@@ -1,0 +1,67 @@
+name: consumer_products
+description: >
+  Brand-owner consumer products companies. Key upstream inputs include raw materials,
+  components, and contract manufacturing. Downstream through distributors, retailers,
+  e-commerce, and direct-to-consumer channels.
+
+layers:
+  - name: raw_materials
+    order: 1
+    description: Agricultural commodities, chemicals, metals, energy, and packaging materials
+    relationship_types: [SUPPLIES]
+
+  - name: components_and_packaging
+    order: 2
+    description: Processed inputs, sub-assemblies, and packaging
+    relationship_types: [SUPPLIES]
+
+  - name: contract_manufacturing
+    order: 3
+    description: Third-party manufacturers, co-packers, and ODMs
+    relationship_types: [CONTRACT_MANUFACTURES_FOR]
+
+  - name: company
+    order: 4
+    description: Brand owner's design, marketing, quality, and logistics activities
+    is_target: true
+
+  - name: distributors
+    order: 5
+    description: Wholesale distributors and logistics providers
+    relationship_types: [DISTRIBUTES, LOGISTICS_PROVIDER_TO]
+
+  - name: retailers_and_marketplaces
+    order: 6
+    description: Mass retailers, specialty stores, online marketplaces, and DTC channels
+    relationship_types: [RESELLS, DISTRIBUTES, MARKETPLACE_FOR]
+
+  - name: consumers
+    order: 7
+    description: End consumers
+    relationship_types: [CUSTOMER_OF]
+
+relationship_types_used:
+  - SUPPLIES
+  - CONTRACT_MANUFACTURES_FOR
+  - DISTRIBUTES
+  - RESELLS
+  - LOGISTICS_PROVIDER_TO
+  - MARKETPLACE_FOR
+  - CUSTOMER_OF
+  - COMPETES_WITH
+
+common_bottlenecks:
+  - Single-country contract manufacturing concentration
+  - Key retail gateway (e.g., dominant e-commerce platform)
+  - Commodity price and availability
+  - Co-packer capacity for seasonal SKUs
+
+suggested_queries:
+  upstream:
+    - '"{company}" contract manufacturer supplier'
+    - '"{company}" raw material sourcing'
+    - 'site:sec.gov "{company}" supply agreement'
+  downstream:
+    - '"{company}" retailer distributor'
+    - '"{company}" Amazon Walmart Target'
+    - 'site:sec.gov "{company}" customer concentration'

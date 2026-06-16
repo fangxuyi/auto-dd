@@ -1,0 +1,82 @@
+name: semiconductors
+description: >
+  Semiconductor design, manufacturing, and distribution companies.
+  Highly specialized supply chain with EDA tools, IP licensing, foundry,
+  OSAT, and system OEM customers.
+
+layers:
+  - name: eda_and_ip
+    order: 1
+    description: EDA software tools and semiconductor IP licensing
+    typical_companies: [SNPS, CDNS, ARMH]
+    relationship_types: [LICENSES_IP_TO, SUPPLIES]
+
+  - name: materials_and_equipment
+    order: 2
+    description: Wafer materials, chemicals, photolithography, and fab equipment
+    typical_companies: [ASML, AMAT, LRCX, TER, ENTG, SUMCO]
+    relationship_types: [SUPPLIES]
+
+  - name: foundry
+    order: 3
+    description: Contract wafer fabrication (TSMC, Samsung, GlobalFoundries)
+    typical_companies: [TSM, SSNLF, GFS]
+    relationship_types: [CONTRACT_MANUFACTURES_FOR]
+
+  - name: assembly_test_and_packaging
+    order: 4
+    description: OSAT — assembly, test, and advanced packaging
+    typical_companies: [ASX, UTAC]
+    relationship_types: [CONTRACT_MANUFACTURES_FOR]
+
+  - name: company
+    order: 5
+    description: The target company's own design and IP activities
+    is_target: true
+
+  - name: distribution
+    order: 6
+    description: Component distributors and brokers
+    typical_companies: [AVT, ARW]
+    relationship_types: [DISTRIBUTES]
+
+  - name: system_oems
+    order: 7
+    description: OEM customers building end products (PCs, servers, smartphones, autos, industrial)
+    relationship_types: [OEM_CUSTOMER_OF, CUSTOMER_OF]
+
+  - name: end_markets
+    order: 8
+    description: Consumer electronics, data centers, automotive, industrial, communications
+    relationship_types: [CUSTOMER_OF]
+
+relationship_types_used:
+  - SUPPLIES
+  - CONTRACT_MANUFACTURES_FOR
+  - LICENSES_IP_TO
+  - DISTRIBUTES
+  - OEM_CUSTOMER_OF
+  - CUSTOMER_OF
+  - COMPETES_WITH
+
+common_bottlenecks:
+  - ASML EUV lithography monopoly for leading-edge nodes
+  - TSMC capacity concentration at advanced nodes
+  - Rare earth and specialty chemical supply (China exposure)
+  - OSAT capacity for advanced packaging (CoWoS, SoIC)
+
+suggested_queries:
+  upstream:
+    - '"{company}" foundry TSMC Samsung'
+    - '"{company}" EDA Synopsys Cadence'
+    - '"{company}" semiconductor equipment'
+    - 'site:sec.gov "{company}" wafer supplier'
+  downstream:
+    - '"{company}" OEM customer design win'
+    - '"{company}" distributor'
+    - 'site:sec.gov "{company}" significant customer'
+
+evidence_priority:
+  - SEC filings (significant customer disclosures, supply agreements)
+  - Earnings call supply chain commentary
+  - Official partner design win announcements

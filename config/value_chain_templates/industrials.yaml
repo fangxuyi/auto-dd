@@ -1,0 +1,58 @@
+name: industrials
+description: >
+  Industrial equipment manufacturers and service providers. Upstream inputs include
+  materials, components, and specialized sub-systems. Downstream through distributors,
+  integrators, operators, and aftermarket services.
+
+layers:
+  - name: materials_and_components
+    order: 1
+    description: Steel, aluminum, polymers, castings, and engineered components
+    relationship_types: [SUPPLIES]
+
+  - name: sub_systems
+    order: 2
+    description: Motors, sensors, electronics, and specialized sub-assemblies
+    relationship_types: [SUPPLIES]
+
+  - name: company
+    order: 3
+    description: Equipment design, integration, testing, and aftermarket
+    is_target: true
+
+  - name: distributors_and_integrators
+    order: 4
+    description: Industrial distributors and system integrators
+    relationship_types: [DISTRIBUTES, INTEGRATES]
+
+  - name: operators
+    order: 5
+    description: End-market operators in energy, manufacturing, infrastructure, defense
+    relationship_types: [CUSTOMER_OF]
+
+  - name: aftermarket
+    order: 6
+    description: Spare parts, service, and maintenance channels
+    relationship_types: [SUPPLIES, RESELLS]
+
+relationship_types_used:
+  - SUPPLIES
+  - DISTRIBUTES
+  - INTEGRATES
+  - CUSTOMER_OF
+  - COMPETES_WITH
+
+common_bottlenecks:
+  - Long-lead specialty castings or forgings
+  - Single-source sub-system vendors
+  - Regulatory qualification requirements
+  - Aftermarket captivity by OEM
+
+suggested_queries:
+  upstream:
+    - '"{company}" supplier component'
+    - '"{company}" sub-system vendor'
+    - 'site:sec.gov "{company}" sole source'
+  downstream:
+    - '"{company}" distributor integrator'
+    - '"{company}" customer operator'

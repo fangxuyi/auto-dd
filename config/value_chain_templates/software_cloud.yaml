@@ -1,0 +1,87 @@
+name: software_cloud
+description: >
+  Enterprise/cloud software companies with SaaS or PaaS delivery models.
+  Key upstream dependencies on hyperscalers, security vendors, and data providers.
+  Downstream via direct sales, channel partners, and integrators.
+
+layers:
+  - name: semiconductors_and_infra
+    order: 1
+    description: Chips, servers, networking hardware, and data center equipment
+    typical_companies: [NVDA, INTC, AMD, CSCO, AVGO]
+    relationship_types: [SUPPLIES, CONTRACT_MANUFACTURES_FOR]
+
+  - name: cloud_hyperscalers
+    order: 2
+    description: Cloud infrastructure and platform providers (IaaS, PaaS)
+    typical_companies: [AMZN, MSFT, GOOGL]
+    relationship_types: [HOSTS, SUPPLIES]
+
+  - name: data_and_security
+    order: 3
+    description: Data providers, identity, security, and compliance tools
+    typical_companies: [SNOW, DDOG, CRWD, OKTA]
+    relationship_types: [PROVIDES_DATA_TO, SUPPLIES, INTEGRATES]
+
+  - name: foundational_software
+    order: 4
+    description: Databases, middleware, dev tools, and open-source dependencies
+    relationship_types: [SUPPLIES, LICENSES_IP_TO]
+
+  - name: company
+    order: 5
+    description: The target company's own activities
+    is_target: true
+
+  - name: integrators_and_channels
+    order: 6
+    description: System integrators, VARs, managed service providers, and implementation partners
+    relationship_types: [RESELLS, DISTRIBUTES, INTEGRATES]
+
+  - name: enterprise_customers
+    order: 7
+    description: Direct enterprise and government customers
+    relationship_types: [CUSTOMER_OF]
+
+  - name: end_users
+    order: 8
+    description: Individual users and teams within customer organizations
+    relationship_types: [CUSTOMER_OF]
+
+relationship_types_used:
+  - SUPPLIES
+  - HOSTS
+  - PROVIDES_DATA_TO
+  - LICENSES_IP_TO
+  - DISTRIBUTES
+  - RESELLS
+  - INTEGRATES
+  - CUSTOMER_OF
+  - CHANNEL_PARTNER_OF
+  - COMPLEMENTS
+  - SUBSTITUTES_FOR
+  - COMPETES_WITH
+
+common_bottlenecks:
+  - Cloud hyperscaler lock-in (AWS, Azure, GCP)
+  - GPU availability for AI workloads
+  - Identity and SSO gatekeeper
+  - Dominant distribution platform controlling customer access
+
+suggested_queries:
+  upstream:
+    - '"{company}" cloud infrastructure provider'
+    - '"{company}" AWS Azure Google Cloud'
+    - '"{company}" data provider supplier'
+    - 'site:sec.gov "{company}" cloud services'
+  downstream:
+    - '"{company}" system integrator partner'
+    - '"{company}" enterprise customer'
+    - '"{company}" reseller distributor'
+    - 'site:sec.gov "{company}" customer'
+
+evidence_priority:
+  - SEC filings (risk factors, contracts, significant customer disclosures)
+  - Official partner directory
+  - Joint press releases
+  - Earnings call mentions

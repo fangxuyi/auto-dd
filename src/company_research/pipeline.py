@@ -25,9 +25,10 @@ from company_research.sources.peer_selector import PeerSelector
 from company_research.sources.product_page import ProductPageAdapter
 from company_research.sources.web_search import WebSearchAdapter
 from company_research.pipeline_flow import RunFlowRecorder
+from company_research.pipeline_update import build_monitoring_dashboard
 from company_research.storage.cache import RawCache
 from company_research.storage.database import Database
-from company_research.storage.export import export_flow, export_qa, export_run
+from company_research.storage.export import export_flow, export_monitoring, export_qa, export_run
 from company_research.storage.vectorstore import VectorStore
 from company_research.validation.citations import verify_citations
 from company_research.validation.qa import run_qa
@@ -498,6 +499,8 @@ def _run(
     s12 = flow.begin("12", "Export")
     export_run(run.run_id, db, out_dir)
     export_qa(qa_result, out_dir)
+    monitoring = build_monitoring_dashboard(run.run_id, symbol.upper(), as_of, db)
+    export_monitoring(monitoring, out_dir)
 
     status = "completed" if qa_result.passed else "partial"
     db.update_run_status(run.run_id, status, datetime.utcnow().isoformat())
@@ -510,7 +513,7 @@ def _run(
     files_written = [
         "sources.json", "evidence.jsonl", "metrics.csv", "contradictions.json",
         "open_questions.json", "conclusions.json", "company_profile.json",
-        "peers.json", "qa_report.json", "run_flow.json",
+        "peers.json", "qa_report.json", "run_flow.json", "monitoring.json",
     ]
     s12.finish(files_written=files_written)
 

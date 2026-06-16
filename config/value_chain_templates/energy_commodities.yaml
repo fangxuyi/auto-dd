@@ -1,0 +1,72 @@
+name: energy_commodities
+description: >
+  Energy and commodity companies including E&P, midstream, refining, utilities,
+  and renewable energy. Long supply chains from resource extraction through
+  transportation, storage, refining, and end-demand.
+
+layers:
+  - name: resource_ownership
+    order: 1
+    description: Mineral rights, acreage, reserves, and resource base
+    relationship_types: [SUPPLIES]
+
+  - name: extraction
+    order: 2
+    description: Drilling, mining, and production services and equipment
+    relationship_types: [SUPPLIES, CONTRACT_MANUFACTURES_FOR]
+
+  - name: processing
+    order: 3
+    description: Refining, upgrading, LNG liquefaction, and beneficiation
+    relationship_types: [SUPPLIES, CONTRACT_MANUFACTURES_FOR]
+
+  - name: transportation
+    order: 4
+    description: Pipelines, tankers, rail, and transmission infrastructure
+    relationship_types: [LOGISTICS_PROVIDER_TO, DISTRIBUTES]
+
+  - name: storage
+    order: 5
+    description: Tank farms, caverns, LNG terminals, and grid storage
+    relationship_types: [SUPPLIES, LOGISTICS_PROVIDER_TO]
+
+  - name: company
+    order: 6
+    description: The target's own operations and commercial activities
+    is_target: true
+
+  - name: distribution_and_trading
+    order: 7
+    description: Physical commodity traders, marketers, and gas utilities
+    relationship_types: [DISTRIBUTES, RESELLS]
+
+  - name: end_demand
+    order: 8
+    description: Industrial consumers, power generators, refiners, and end-user markets
+    relationship_types: [CUSTOMER_OF]
+
+relationship_types_used:
+  - SUPPLIES
+  - CONTRACT_MANUFACTURES_FOR
+  - LOGISTICS_PROVIDER_TO
+  - DISTRIBUTES
+  - RESELLS
+  - CUSTOMER_OF
+  - JOINT_VENTURE_WITH
+  - COMPETES_WITH
+
+common_bottlenecks:
+  - Pipeline capacity and takeaway constraints
+  - Refinery conversion capacity
+  - LNG terminal access
+  - Transmission congestion and interconnects
+  - Government export permits or sanctions
+
+suggested_queries:
+  upstream:
+    - '"{company}" supplier contractor services'
+    - '"{company}" pipeline midstream transportation'
+    - 'site:sec.gov "{company}" offtake agreement'
+  downstream:
+    - '"{company}" offtake customer'
+    - '"{company}" end market industrial power'
