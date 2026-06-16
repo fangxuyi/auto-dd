@@ -18,6 +18,7 @@ from company_research.storage.cache import RawCache
 log = logging.getLogger(__name__)
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
+_DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
 _FETCH_DELAY = 1.5  # seconds between external page fetches (polite crawling)
 
 _BROWSER_UA = (
@@ -104,23 +105,33 @@ def _build_queries(company: CompanyIdentity) -> list[str]:
 
 
 def _ddg_search(query: str, max_results: int) -> list[dict]:
-    """Scrape DuckDuckGo HTML and return list of {title, url, snippet}."""
-    time.sleep(1.0)  # DDG rate-limit courtesy delay
-    params = {"q": query, "kl": "us-en", "ia": "web"}
-    r = httpx.post(
-        _DDG_URL,
-        data=params,
-        headers={
-            "User-Agent": _BROWSER_UA,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "text/html",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-        timeout=30,
-        follow_redirects=True,
-    )
-    r.raise_for_status()
-    return _parse_ddg_html(r.content, max_results)
+    """Scrape DuckDuckGo HTML and return list of {title, url, snippet}.
+
+    Tries the standard HTML endpoint first; falls back to the Lite endpoint
+    if DDG serves a CAPTCHA challenge (HTTP 202 or empty results).
+    """
+    for url in (_DDG_URL, _DDG_LITE_URL):
+        time.sleep(1.5)  # DDG rate-limit courtesy delay
+        r = httpx.post(
+            url,
+            data={"q": query, "kl": "us-en", "ia": "web"},
+            headers={
+                "User-Agent": _BROWSER_UA,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "text/html",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=30,
+            follow_redirects=True,
+        )
+        r.raise_for_status()
+        if r.status_code == 202:
+            log.warning("DDG CAPTCHA challenge at %s for query %r — trying fallback", url, query)
+            continue
+        results = _parse_ddg_html(r.content, max_results)
+        if results:
+            return results
+    return []
 
 
 def _parse_ddg_html(html: bytes, max_results: int) -> list[dict]:

@@ -19,20 +19,37 @@ from company_research.storage.cache import RawCache
 log = logging.getLogger(__name__)
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
+_DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
 _BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Minimum candidate length to attempt EDGAR resolution
+# Minimum candidate length and word count to attempt EDGAR resolution
 _MIN_NAME_LEN = 4
+_MIN_MEANINGFUL_WORDS = 2
 
-# Words to strip from extracted candidate names before EDGAR lookup
+# Words that should not be counted toward _MIN_MEANINGFUL_WORDS.
+# Company suffixes (Inc, Corp, etc.) are intentionally excluded so "Microsoft Corp"
+# counts as 2 meaningful words and passes the threshold.
+# Includes generic English words that commonly appear Title Case in business sentences
+# but are not company-name identifiers (e.g. "Old Market", "New Capital").
 _STOP_WORDS = {
-    "inc", "corp", "co", "ltd", "llc", "plc", "group", "holdings",
-    "the", "a", "an", "and", "or", "of", "in", "on",
-    "its", "their", "vs", "versus", "compared", "like", "such",
+    # articles, prepositions, conjunctions
+    "the", "a", "an", "and", "or", "of", "in", "on", "at", "by", "for", "with",
+    # pronouns
+    "its", "their", "our", "your", "my",
+    # comparison / relational
+    "vs", "versus", "compared", "like", "such", "than",
+    # common English adjectives that appear Title Case but are not brand identifiers
+    "old", "new", "big", "small", "large", "major", "key", "main", "top",
+    "best", "leading", "global", "national", "american", "digital", "traditional",
+    "primary", "secondary", "current", "former", "recent", "next", "first", "second",
+    # generic business/market nouns
+    "market", "capital", "technology", "tech", "industry", "business", "company",
+    "companies", "product", "service", "solution", "platform", "sector",
+    "stock", "share", "shares", "value", "growth", "revenue", "profit",
 }
 
 
@@ -133,6 +150,17 @@ class PeerSelector:
             if not ticker or ticker in seen_tickers:
                 continue
 
+            # Reject if the candidate is not a meaningful substring of the matched title
+            # (prevents "Technology" from matching "DXC Technology Co" accidentally)
+            candidate_words = [
+                w for w in candidate.lower().split() if w not in _STOP_WORDS
+            ]
+            matched_title = best.get("title", "").lower()
+            overlap = sum(1 for w in candidate_words if w in matched_title)
+            if len(candidate_words) > 0 and overlap / len(candidate_words) < 0.5:
+                log.debug("Skipping low-overlap match: %r → %r", candidate, best.get("title"))
+                continue
+
             seen_tickers.add(ticker)
             cik = str(best.get("cik_str", best.get("cik", ""))).zfill(10)
             peer = CompanyIdentity(
@@ -153,28 +181,38 @@ class PeerSelector:
 
 
 def _ddg_snippets(query: str) -> list[str]:
-    """Return snippet/title texts from a DuckDuckGo HTML search."""
-    time.sleep(1.0)
-    r = httpx.post(
-        _DDG_URL,
-        data={"q": query, "kl": "us-en", "ia": "web"},
-        headers={
-            "User-Agent": _BROWSER_UA,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "text/html",
-        },
-        timeout=30,
-        follow_redirects=True,
-    )
-    r.raise_for_status()
+    """Return snippet/title texts from a DuckDuckGo HTML search.
 
-    soup = BeautifulSoup(r.content, "lxml")
-    texts: list[str] = []
-    for el in soup.select("a.result__a, .result__snippet"):
-        t = el.get_text(strip=True)
-        if t:
-            texts.append(t)
-    return texts
+    Tries the standard endpoint first; falls back to Lite on CAPTCHA (HTTP 202).
+    """
+    for url in (_DDG_URL, _DDG_LITE_URL):
+        time.sleep(1.5)
+        r = httpx.post(
+            url,
+            data={"q": query, "kl": "us-en", "ia": "web"},
+            headers={
+                "User-Agent": _BROWSER_UA,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "text/html",
+            },
+            timeout=30,
+            follow_redirects=True,
+        )
+        r.raise_for_status()
+        if r.status_code == 202:
+            log.warning("DDG CAPTCHA at %s for query %r — trying fallback", url, query)
+            continue
+
+        soup = BeautifulSoup(r.content, "lxml")
+        texts = [
+            el.get_text(strip=True)
+            for el in soup.select("a.result__a, .result__snippet, td.result-link, td.result-snippet")
+            if el.get_text(strip=True)
+        ]
+        if texts:
+            return texts
+
+    return []
 
 
 _COMPANY_RE = re.compile(
@@ -191,6 +229,6 @@ def _extract_company_names(text: str) -> list[str]:
         words = name.lower().split()
         # Filter out pure stop-word matches
         meaningful = [w for w in words if w not in _STOP_WORDS]
-        if meaningful and len(name) >= _MIN_NAME_LEN:
+        if len(meaningful) >= _MIN_MEANINGFUL_WORDS and len(name) >= _MIN_NAME_LEN:
             names.append(name)
     return names
