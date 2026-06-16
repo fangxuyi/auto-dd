@@ -9,8 +9,6 @@ from datetime import date
 import httpx
 from bs4 import BeautifulSoup
 
-import urllib.parse
-
 from company_research.models.identity import CompanyIdentity
 from company_research.models.sources import NormalizedDocument, RawDocument, SourceRecord
 from company_research.parsing.html import parse_html
@@ -173,57 +171,28 @@ def _classify_source_type(url: str, label: str) -> str:
     return "ir_page"
 
 
-_DDG_URL = "https://html.duckduckgo.com/html/"
-_DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
-
-
 def _discover_ir_url(company_name: str) -> str | None:
     """Search DuckDuckGo for the company's IR page and return the first matching URL."""
-    import time
-    query = f'"{company_name}" investor relations'
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        log.warning("ddgs library not installed — IR URL discovery disabled. Run: pip install ddgs")
+        return None
 
-    for ddg_url in (_DDG_URL, _DDG_LITE_URL):
-        time.sleep(1.5)
-        try:
-            r = httpx.post(
-                ddg_url,
-                data={"q": query, "kl": "us-en", "ia": "web"},
-                headers={
-                    "User-Agent": _BROWSER_UA,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "text/html",
-                },
-                timeout=15,
-                follow_redirects=True,
-            )
-            r.raise_for_status()
-        except Exception as e:
-            log.warning("IR URL discovery failed at %s for %r: %s", ddg_url, company_name, e)
-            continue
+    query = f'"{company_name}" investor relations site:ir.* OR site:investors.*'
+    try:
+        with DDGS() as ddgs:
+            hits = list(ddgs.text(query, max_results=5))
+    except Exception as e:
+        log.warning("DDG IR search failed for %r: %s", company_name, e)
+        return None
 
-        if r.status_code == 202:
-            log.warning("DDG CAPTCHA at %s for IR discovery of %r", ddg_url, company_name)
-            continue
-
-        soup = BeautifulSoup(r.content, "lxml")
-        for a in soup.select("a.result__a, a.result-link"):
-            href = a.get("href", "")
-            actual_url = href
-            if "uddg=" in href:
-                parsed = urllib.parse.urlparse(href)
-                qs = urllib.parse.parse_qs(parsed.query)
-                vals = qs.get("uddg", [])
-                if vals:
-                    actual_url = urllib.parse.unquote(vals[0])
-            elif href.startswith("http"):
-                actual_url = href
-            else:
-                continue
-
-            url_lower = actual_url.lower()
-            if any(kw in url_lower for kw in ("investor", "/ir/", "ir.", "investor.")):
-                log.info("Discovered IR URL for %r: %s", company_name, actual_url)
-                return actual_url
+    for hit in hits:
+        url = hit.get("href", "")
+        url_lower = url.lower()
+        if any(kw in url_lower for kw in ("investor", "/ir/", "ir.", "investors.")):
+            log.info("Discovered IR URL for %r: %s", company_name, url)
+            return url
 
     log.debug("No IR URL found via DDG for %r", company_name)
     return None

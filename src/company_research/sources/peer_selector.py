@@ -3,12 +3,8 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from datetime import date
 from typing import Any
-
-import httpx
-from bs4 import BeautifulSoup
 
 from company_research.identity.edgar import _all_tickers, lookup_by_name
 from company_research.models.identity import CompanyIdentity
@@ -17,14 +13,6 @@ from company_research.sources.edgar import EdgarAdapter
 from company_research.storage.cache import RawCache
 
 log = logging.getLogger(__name__)
-
-_DDG_URL = "https://html.duckduckgo.com/html/"
-_DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
-_BROWSER_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
-)
 
 # Minimum candidate length and word count to attempt EDGAR resolution
 _MIN_NAME_LEN = 4
@@ -181,38 +169,20 @@ class PeerSelector:
 
 
 def _ddg_snippets(query: str) -> list[str]:
-    """Return snippet/title texts from a DuckDuckGo HTML search.
+    """Return snippet/title texts from a DuckDuckGo search via the ddgs library."""
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        log.warning("ddgs library not installed — peer discovery disabled. Run: pip install ddgs")
+        return []
 
-    Tries the standard endpoint first; falls back to Lite on CAPTCHA (HTTP 202).
-    """
-    for url in (_DDG_URL, _DDG_LITE_URL):
-        time.sleep(1.5)
-        r = httpx.post(
-            url,
-            data={"q": query, "kl": "us-en", "ia": "web"},
-            headers={
-                "User-Agent": _BROWSER_UA,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "text/html",
-            },
-            timeout=30,
-            follow_redirects=True,
-        )
-        r.raise_for_status()
-        if r.status_code == 202:
-            log.warning("DDG CAPTCHA at %s for query %r — trying fallback", url, query)
-            continue
-
-        soup = BeautifulSoup(r.content, "lxml")
-        texts = [
-            el.get_text(strip=True)
-            for el in soup.select("a.result__a, .result__snippet, td.result-link, td.result-snippet")
-            if el.get_text(strip=True)
-        ]
-        if texts:
-            return texts
-
-    return []
+    try:
+        with DDGS() as ddgs:
+            hits = list(ddgs.text(query, max_results=8))
+        return [h.get("title", "") + " " + h.get("body", "") for h in hits]
+    except Exception as e:
+        log.warning("DDG peer search failed for %r: %s", query, e)
+        return []
 
 
 _COMPANY_RE = re.compile(

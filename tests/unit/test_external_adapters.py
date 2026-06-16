@@ -36,15 +36,6 @@ def mock_cache() -> MagicMock:
     return cache
 
 
-_FAKE_DDG_HTML = b"""
-<html><body>
-<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.reuters.com%2Fapple-review&rut=x">Apple review on Reuters</a>
-<div class="result__snippet">Apple Inc faces tough competition from Samsung.</div>
-<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.bloomberg.com%2Fapple-analysis&rut=x">Apple analysis on Bloomberg</a>
-<div class="result__snippet">An analyst note on Apple.</div>
-</body></html>
-"""
-
 _FAKE_IR_HTML = b"""
 <html><body>
 <a href="/press-release/2024-earnings">Q4 2024 Earnings Press Release</a>
@@ -71,14 +62,8 @@ class TestWebSearchAdapter:
     def test_search_returns_source_records(self, company, mock_cache):
         from company_research.sources.web_search import WebSearchAdapter
 
-        with patch("httpx.post") as mock_post:
-            resp = MagicMock()
-            resp.content = _FAKE_DDG_HTML
-            resp.raise_for_status = MagicMock()
-            mock_post.return_value = resp
-
-            adapter = WebSearchAdapter(cache=mock_cache, max_results=2)
-            sources = adapter.search(company, cutoff=date(2026, 6, 15))
+        adapter = WebSearchAdapter(cache=mock_cache, max_results=2)
+        sources = adapter.search(company, cutoff=date(2026, 6, 15))
 
         assert len(sources) > 0
         for src in sources:
@@ -90,16 +75,8 @@ class TestWebSearchAdapter:
     def test_search_deduplicates_urls(self, company, mock_cache):
         from company_research.sources.web_search import WebSearchAdapter
 
-        duplicate_html = _FAKE_DDG_HTML  # same HTML for all 3 queries
-
-        with patch("httpx.post") as mock_post:
-            resp = MagicMock()
-            resp.content = duplicate_html
-            resp.raise_for_status = MagicMock()
-            mock_post.return_value = resp
-
-            adapter = WebSearchAdapter(cache=mock_cache, max_results=5)
-            sources = adapter.search(company, cutoff=date(2026, 6, 15))
+        adapter = WebSearchAdapter(cache=mock_cache, max_results=5)
+        sources = adapter.search(company, cutoff=date(2026, 6, 15))
 
         urls = [s.url for s in sources]
         assert len(urls) == len(set(urls)), "Duplicate URLs returned"
@@ -107,7 +84,8 @@ class TestWebSearchAdapter:
     def test_search_graceful_failure(self, company, mock_cache):
         from company_research.sources.web_search import WebSearchAdapter
 
-        with patch("httpx.post", side_effect=Exception("network error")):
+        # Simulate DDG being completely unavailable
+        with patch("company_research.sources.web_search._ddg_search", side_effect=Exception("network error")):
             adapter = WebSearchAdapter(cache=mock_cache, max_results=3)
             sources = adapter.search(company, cutoff=date(2026, 6, 15))
 
@@ -203,6 +181,7 @@ class TestIRPageAdapter:
             currency="USD",
             filing_jurisdiction="US",
         )
+        # Real DDG search for this fictional company won't find an IR URL
         adapter = IRPageAdapter(cache=mock_cache, max_pages=3)
         sources = adapter.search(no_ir, cutoff=date(2026, 6, 15))
 

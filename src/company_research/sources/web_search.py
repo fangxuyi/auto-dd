@@ -1,4 +1,4 @@
-"""DuckDuckGo HTML web-search adapter — no API key required."""
+"""DuckDuckGo web-search adapter — no API key required."""
 from __future__ import annotations
 
 import logging
@@ -7,7 +7,6 @@ import urllib.parse
 from datetime import date
 
 import httpx
-from bs4 import BeautifulSoup
 
 from company_research.config import settings
 from company_research.models.identity import CompanyIdentity
@@ -17,8 +16,6 @@ from company_research.storage.cache import RawCache
 
 log = logging.getLogger(__name__)
 
-_DDG_URL = "https://html.duckduckgo.com/html/"
-_DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
 _FETCH_DELAY = 1.5  # seconds between external page fetches (polite crawling)
 
 _BROWSER_UA = (
@@ -105,75 +102,20 @@ def _build_queries(company: CompanyIdentity) -> list[str]:
 
 
 def _ddg_search(query: str, max_results: int) -> list[dict]:
-    """Scrape DuckDuckGo HTML and return list of {title, url, snippet}.
+    """Search DuckDuckGo via the ddgs library and return list of {title, url, snippet}."""
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        log.warning("ddgs library not installed — DDG search disabled. Run: pip install ddgs")
+        return []
 
-    Tries the standard HTML endpoint first; falls back to the Lite endpoint
-    if DDG serves a CAPTCHA challenge (HTTP 202 or empty results).
-    """
-    for url in (_DDG_URL, _DDG_LITE_URL):
-        time.sleep(1.5)  # DDG rate-limit courtesy delay
-        r = httpx.post(
-            url,
-            data={"q": query, "kl": "us-en", "ia": "web"},
-            headers={
-                "User-Agent": _BROWSER_UA,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "text/html",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            timeout=30,
-            follow_redirects=True,
-        )
-        r.raise_for_status()
-        if r.status_code == 202:
-            log.warning("DDG CAPTCHA challenge at %s for query %r — trying fallback", url, query)
-            continue
-        results = _parse_ddg_html(r.content, max_results)
-        if results:
-            return results
-    return []
-
-
-def _parse_ddg_html(html: bytes, max_results: int) -> list[dict]:
-    soup = BeautifulSoup(html, "lxml")
-    results: list[dict] = []
-
-    for a in soup.select("a.result__a"):
-        if len(results) >= max_results:
-            break
-
-        href = a.get("href", "")
-        title = a.get_text(strip=True)
-        actual_url = _extract_url(href)
-        if not actual_url or not title:
-            continue
-
-        # Find snippet in parent container
-        snippet = ""
-        container = a.find_parent(class_=lambda c: c and "result__body" in c)
-        if container:
-            snip_el = container.find(class_="result__snippet")
-            if snip_el:
-                snippet = snip_el.get_text(strip=True)
-
-        results.append({"title": title, "url": actual_url, "snippet": snippet})
-
-    return results
-
-
-def _extract_url(href: str) -> str:
-    """Extract actual URL from DDG redirect href (uddg= param) or return raw href."""
-    if not href:
-        return ""
-    if "uddg=" in href:
-        parsed = urllib.parse.urlparse(href)
-        qs = urllib.parse.parse_qs(parsed.query)
-        vals = qs.get("uddg", [])
-        if vals:
-            return urllib.parse.unquote(vals[0])
-    if href.startswith("http"):
-        return href
-    return ""
+    try:
+        with DDGS() as ddgs:
+            hits = list(ddgs.text(query, max_results=max_results))
+        return [{"title": h.get("title", ""), "url": h.get("href", ""), "snippet": h.get("body", "")} for h in hits]
+    except Exception as e:
+        log.warning("DDG search failed for %r: %s", query, e)
+        return []
 
 
 def _domain(url: str) -> str:

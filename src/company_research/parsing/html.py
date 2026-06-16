@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Any
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 from company_research.models.sources import (
     DocumentSection,

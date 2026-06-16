@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 
+from company_research.identity.edgar import lookup_by_name
 from company_research.identity.resolver import lookup_cik
 from company_research.models.value_chain import (
     EntityCandidate,
@@ -34,23 +35,47 @@ def resolve_candidates(
             continue
         seen_names.add(norm)
 
+        # Pre-resolved (e.g. by reverse lookup) — load entity from DB and pass through
+        if candidate.resolution_status == "resolved" and candidate.resolved_entity_id:
+            db_row = db.get_vc_entity(candidate.resolved_entity_id)
+            if db_row:
+                entity = PublicEntityIdentity(
+                    entity_id=db_row["entity_id"],
+                    legal_name=db_row["legal_name"],
+                    common_name=db_row.get("common_name") or "",
+                    ticker=db_row.get("ticker"),
+                    regulator_id=db_row.get("regulator_id"),
+                    active_listing=bool(db_row.get("active_listing", 1)),
+                )
+                results.append((candidate, entity))
+            else:
+                results.append((candidate, None))
+            continue
+
+        match: dict | None = None
         try:
-            matches = lookup_cik(candidate.normalized_name)
+            # First: exact ticker match (highest confidence)
+            exact = lookup_cik(candidate.normalized_name)
+            if len(exact) == 1:
+                match = exact[0]
+            elif not exact:
+                # Fallback: fuzzy name search (lower confidence — mark ambiguous if >1)
+                name_hits = lookup_by_name(candidate.normalized_name, max_results=3)
+                if len(name_hits) == 1:
+                    match = name_hits[0]
+                    log.debug(
+                        "Fuzzy-resolved '%s' → %s", candidate.normalized_name, match.get("title")
+                    )
         except Exception as e:
             log.debug("CIK lookup failed for '%s': %s", candidate.normalized_name, e)
             candidate.resolution_status = "rejected"
             results.append((candidate, None))
             continue
 
-        if not matches:
+        if match is None:
             candidate.resolution_status = "unresolved"
             results.append((candidate, None))
-        elif len(matches) > 1:
-            # Ambiguous — don't promote
-            candidate.resolution_status = "ambiguous"
-            results.append((candidate, None))
         else:
-            match = matches[0]
             entity = PublicEntityIdentity(
                 legal_name=match.get("title", candidate.normalized_name),
                 common_name=candidate.normalized_name,
