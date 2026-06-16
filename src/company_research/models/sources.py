@@ -27,6 +27,7 @@ class SourceRecord(BaseModel):
     period_covered: str | None = None  # e.g. "FY2024", "Q3_2024"
     company_or_external: Literal["company", "external", "regulator"] = "external"
     reliability_tier: int = Field(ge=1, le=8, default=8)
+    is_peer: bool = False  # True for peer/competitor filings; indexed into separate collection
 
 
 class RawDocument(BaseModel):

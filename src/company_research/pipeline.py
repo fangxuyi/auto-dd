@@ -111,7 +111,10 @@ def _run(
 
     db = Database(db_path)
     cache = RawCache(cache_root)
+    # Own-company docs (10-Ks, IR pages, web search about target)
     vector_store = VectorStore(base_dir=output_root, symbol=symbol)
+    # Peer/competitor filings — separate collection, not used for report generation
+    peer_vector_store = VectorStore(base_dir=output_root, symbol=symbol + "_peers")
 
     llm: ReasoningProvider
     if dry_run:
@@ -260,8 +263,9 @@ def _run(
                 peer_identities.append(peer_identity)
                 db.upsert_company(peer_identity)
                 for ps in peer_sources:
-                    db.upsert_source(ps, run.run_id)
-                ext_sources.extend(peer_sources)
+                    tagged = ps.model_copy(update={"is_peer": True})
+                    db.upsert_source(tagged, run.run_id)
+                    ext_sources.append(tagged)
                 peer_filings_added += len(peer_sources)
                 db.upsert_peer(
                     run.run_id,
@@ -322,7 +326,8 @@ def _run(
             cache_tag = "new" if is_new else "cached"
             log.debug("Document %s (%s, %d bytes)", source.source_id, cache_tag, raw_doc.size_bytes)
             norm_doc = _adapter.normalize(raw_doc)
-            n_chunks = vector_store.index_document(
+            target_vs = peer_vector_store if source.is_peer else vector_store
+            n_chunks = target_vs.index_document(
                 doc_id=norm_doc.doc_id,
                 text=norm_doc.text,
                 metadata={
@@ -333,7 +338,8 @@ def _run(
                     "published_date": source.published_date.isoformat() if source.published_date else "",
                 },
             )
-            log.info("Indexed %d chunks from %s (%s)", n_chunks, source.source_type, source.source_id)
+            collection = "peers" if source.is_peer else "own"
+            log.info("Indexed %d chunks from %s into %s collection", n_chunks, source.source_type, collection)
             fetch_detail.append({"title": source.title, "type": source.source_type, "chunks": n_chunks, "cache": cache_tag})
             indexed += 1
         except Exception as e:
@@ -342,14 +348,15 @@ def _run(
             skipped += 1
 
     log.info(
-        "Indexing complete: %d indexed, %d skipped — vector store total=%d chunks",
-        indexed, skipped, vector_store.count,
+        "Indexing complete: %d indexed, %d skipped — own=%d chunks, peers=%d chunks",
+        indexed, skipped, vector_store.count, peer_vector_store.count,
     )
     s34.finish(
         status="completed" if skipped == 0 else "partial",
         indexed=indexed,
         skipped=skipped,
-        total_chunks=vector_store.count,
+        own_chunks=vector_store.count,
+        peer_chunks=peer_vector_store.count,
         sources=fetch_detail,
     )
 
