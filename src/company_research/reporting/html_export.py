@@ -433,6 +433,57 @@ cite.cit:hover::after { opacity:1 }
   font-family:var(--font-d);font-style:italic;font-size:.88rem;color:var(--text-3);
 }
 
+/* ── contradictions ── */
+.contradiction-section {
+  margin:3rem 0 0;border-top:2px solid var(--border);padding-top:2rem;
+}
+.contradiction-heading {
+  font-family:var(--font-s);font-size:1.1rem;font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--text-1);
+  display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem;
+}
+.contradiction-count {
+  font-size:.72rem;font-weight:500;letter-spacing:.04em;
+  background:rgba(245,158,11,.18);color:#b45309;
+  border:1px solid rgba(245,158,11,.35);
+  border-radius:999px;padding:.2em .75em;text-transform:none;
+}
+.contradiction-intro {
+  font-family:var(--font-m);font-size:.85rem;color:var(--text-2);
+  line-height:1.6;margin-bottom:1.5rem;
+}
+.contradiction-list { display:flex;flex-direction:column;gap:1rem; }
+.contradiction-card {
+  border-radius:8px;padding:1.1rem 1.3rem;border-left:4px solid;
+  position:relative;
+}
+.contradiction-material {
+  background:rgba(245,158,11,.08);border-color:#f59e0b;
+}
+.contradiction-minor {
+  background:rgba(99,102,241,.06);border-color:#818cf8;
+}
+.contradiction-badge {
+  display:inline-block;font-family:var(--font-s);font-size:.62rem;
+  font-weight:700;letter-spacing:.1em;border-radius:4px;
+  padding:.2em .55em;margin-bottom:.55rem;
+}
+.contradiction-badge-material {
+  background:rgba(245,158,11,.2);color:#92400e;
+}
+.contradiction-badge-minor {
+  background:rgba(99,102,241,.15);color:#4338ca;
+}
+.contradiction-desc {
+  font-family:var(--font-m);font-size:.85rem;color:var(--text-1);
+  line-height:1.65;margin:0 0 .6rem;
+}
+.contradiction-resolution {
+  font-family:var(--font-m);font-size:.8rem;color:var(--text-2);
+  line-height:1.6;margin:0;border-top:1px solid rgba(0,0,0,.07);
+  padding-top:.55rem;
+}
+
 /* ── value chain panel ── */
 .vc-wrap {
   max-width:1120px;margin:0 auto;padding:3rem 2.5rem 6rem;
@@ -1187,6 +1238,44 @@ def _render_vc_panel(graph_data: dict | None) -> str:
 """
 
 
+def _render_contradictions_section(contradictions: list[dict]) -> str:
+    if not contradictions:
+        return ""
+
+    material = [c for c in contradictions if c.get("severity", "").lower() == "material"]
+    minor    = [c for c in contradictions if c.get("severity", "").lower() != "material"]
+
+    def _card(c: dict) -> str:
+        is_mat   = c.get("severity", "").lower() == "material"
+        badge_cls = "contradiction-badge-material" if is_mat else "contradiction-badge-minor"
+        badge_lbl = "MATERIAL" if is_mat else "MINOR"
+        desc     = html.escape(c.get("description", ""))
+        res      = html.escape(c.get("resolution", ""))
+        res_html = f'<p class="contradiction-resolution"><strong>Resolution:</strong> {res}</p>' if res else ""
+        return f"""<div class="contradiction-card {'contradiction-material' if is_mat else 'contradiction-minor'}">
+  <span class="contradiction-badge {badge_cls}">{badge_lbl}</span>
+  <p class="contradiction-desc">{desc}</p>
+  {res_html}
+</div>"""
+
+    cards_html = "\n".join(_card(c) for c in material + minor)
+    mat_count = len(material)
+    min_count = len(minor)
+    summary = f"{mat_count} material, {min_count} minor" if minor else f"{mat_count} material"
+
+    return f"""<section class="contradiction-section">
+  <h2 class="contradiction-heading">
+    Contradictions Flagged
+    <span class="contradiction-count">{summary}</span>
+  </h2>
+  <p class="contradiction-intro">The following pairs of facts from different source documents are in direct conflict.
+  Material contradictions must be reviewed before relying on conclusions in this report.</p>
+  <div class="contradiction-list">
+{cards_html}
+  </div>
+</section>"""
+
+
 def _render_sources_panel(sources: list[dict]) -> str:
     if not sources:
         return "<div class='sources-wrap'><p style='padding:3rem;color:var(--text-3);font-family:var(--font-m);font-size:.7rem'>No sources.json found in run directory.</p></div>"
@@ -1311,6 +1400,7 @@ def render_html(
     data: ReportData,
     graph_data: dict | None = None,
     sources_data: list[dict] | None = None,
+    contradictions_data: list[dict] | None = None,
     qa_port: int = _QA_PORT_DEFAULT,
 ) -> str:
     exchange  = data.metadata.get("Primary listing", "")
@@ -1327,6 +1417,7 @@ def render_html(
     has_vc = graph_data is not None and bool(graph_data.get("nodes"))
     vc_panel  = _render_vc_panel(graph_data) if has_vc else f"<div class='vc-wrap'><p style='padding:3rem;color:var(--text-3);font-family:var(--font-m);font-size:.7rem'>No value chain data found. Run: company-research value-chain {html.escape(data.ticker)}</p></div>"
     src_panel = _render_sources_panel(sources_data or [])
+    contradictions_html = _render_contradictions_section(contradictions_data or [])
     as_of     = data.metadata.get("As of", "<date>")
     qa_panel  = _render_qa_panel(data.ticker, qa_port, as_of=as_of)
     js_block  = _build_js(data.ticker, has_vc, qa_port)
@@ -1377,6 +1468,8 @@ window.GRAPH_DATA = {graph_json};
 <div class="sections">
   {sections_html}
 </div>
+
+{contradictions_html}
 
 {footer_html}
 
@@ -1451,7 +1544,16 @@ def convert(
             except Exception:
                 pass
 
-    out = render_html(data, graph_data=graph_data, sources_data=sources_data, qa_port=qa_port)
+    contradictions_data: list[dict] | None = None
+    contradictions_path = run_dir / "contradictions.json"
+    if contradictions_path.exists():
+        try:
+            contradictions_data = json.loads(contradictions_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    out = render_html(data, graph_data=graph_data, sources_data=sources_data,
+                      contradictions_data=contradictions_data, qa_port=qa_port)
 
     if html_path is None:
         html_path = md_path.with_suffix(".html")

@@ -8,21 +8,63 @@ def write_report(
     report_md: str,
     sources: list[dict],
     out_dir: Path,
+    contradictions: list[dict] | None = None,
 ) -> None:
     """Write report.md and executive_summary.md to out_dir.
 
     Citation tags `[src:SOURCE_ID]` are replaced with short readable references
-    using the sources list from the DB.
+    using the sources list from the DB. If contradictions are provided, a
+    flagged-contradictions section is appended to the report.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     source_map = {s["source_id"]: s for s in sources}
     resolved = _resolve_citations(report_md, source_map)
 
+    if contradictions:
+        resolved = resolved.rstrip() + "\n\n" + _format_contradictions_md(contradictions)
+
     (out_dir / "report.md").write_text(resolved, encoding="utf-8")
 
     summary = _extract_executive_summary(resolved)
     (out_dir / "executive_summary.md").write_text(summary, encoding="utf-8")
+
+
+def _format_contradictions_md(contradictions: list[dict]) -> str:
+    """Append a contradictions section to the markdown report."""
+    material = [c for c in contradictions if c.get("severity", "").lower() == "material"]
+    minor    = [c for c in contradictions if c.get("severity", "").lower() != "material"]
+
+    lines = [
+        "---",
+        "",
+        "## Contradictions Flagged",
+        "",
+        "> The following pairs of facts from different source documents are in direct conflict.",
+        "> **Material contradictions must be reviewed before relying on conclusions in this report.**",
+        "",
+    ]
+
+    def _entry(c: dict, badge: str) -> list[str]:
+        desc = c.get("description", "").strip()
+        res  = c.get("resolution", "").strip()
+        out  = [f"### {badge} {desc[:80]}{'…' if len(desc) > 80 else ''}", ""]
+        if len(desc) > 80:
+            out += [desc, ""]
+        if res:
+            out += [f"**Resolution:** {res}", ""]
+        return out
+
+    if material:
+        lines += ["#### Material", ""]
+        for c in material:
+            lines += _entry(c, "⚠")
+    if minor:
+        lines += ["#### Minor", ""]
+        for c in minor:
+            lines += _entry(c, "ℹ")
+
+    return "\n".join(lines) + "\n"
 
 
 def _resolve_citations(text: str, source_map: dict[str, dict]) -> str:

@@ -484,6 +484,7 @@ def _run_analysis(
     )
 
     # Step 7: Contradiction detection
+    contradictions: list = []
     log.info("Step 7/12 — Contradiction detection (%d facts)", len(all_facts))
     if all_facts:
         s7 = flow.begin("7", "Contradiction Detection")
@@ -529,7 +530,8 @@ def _run_analysis(
     try:
         report_md = generate_report(run=run, company=company, db=db, llm=llm)
         db_sources = db.get_sources(run.run_id)
-        write_report(report_md=report_md, sources=db_sources, out_dir=out_dir)
+        contradiction_dicts = [c.model_dump() if hasattr(c, "model_dump") else dict(c) for c in contradictions]
+        write_report(report_md=report_md, sources=db_sources, out_dir=out_dir, contradictions=contradiction_dicts)
         report_path = out_dir / "report.md"
         word_count = len(report_md.split())
         log.info(
