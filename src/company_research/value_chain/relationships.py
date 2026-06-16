@@ -37,10 +37,18 @@ def build_relationships(
     for candidate, entity in resolved_pairs:
         if candidate.resolution_status != "resolved" or entity is None:
             continue
+
         if entity.entity_id == target_entity_id:
             continue  # don't create self-relationship
 
         rel_type = candidate.proposed_relationship_type or "CATEGORY_PARTICIPANT"
+
+        # Reverse-lookup source: the counterparty's filing named us — strong secondary evidence
+        is_reverse = candidate.source_id.startswith("edgar_reverse:")
+        evidence_status = (
+            "confirmed_secondary" if is_reverse
+            else ("confirmed_primary" if candidate.source_id else "inferred")
+        )
 
         rel = CompanyRelationship(
             run_id=run_id,
@@ -49,15 +57,15 @@ def build_relationships(
             relationship_type=rel_type,
             value_chain_layer=candidate.proposed_layer,
             last_verified_date=as_of,
-            evidence_status="confirmed_primary" if candidate.source_id else "inferred",
+            evidence_status=evidence_status,
             source_ids=[candidate.source_id] if candidate.source_id else [],
         )
         rel.current_status = relationship_status_from_evidence(
-            rel.evidence_status, reverse_verified=False
+            rel.evidence_status, reverse_verified=is_reverse
         )
         rel.confidence = evidence_status_to_confidence(
-            target_confirmed=bool(candidate.source_id),
-            counterparty_confirmed=False,
+            target_confirmed=not is_reverse and bool(candidate.source_id),
+            counterparty_confirmed=is_reverse,
         )
 
         db.upsert_vc_relationship(rel)
