@@ -188,7 +188,9 @@ def _run(
             found = ir_adapter.search(company, cutoff=as_of)
             ext_sources.extend(found)
             log.info("IRPageAdapter: %d pages for %s", len(found), company.symbol)
-            s1b_sub.append({"adapter": "IRPageAdapter", "status": "✓ completed", "sources_found": len(found)})
+            s1b_sub.append({"adapter": "IRPageAdapter",
+                            "status": "✓ completed" if found else "~ partial (0 sources)",
+                            "sources_found": len(found)})
         except Exception as e:
             log.warning("IRPageAdapter failed: %s", e)
             s1b_sub.append({"adapter": "IRPageAdapter", "status": "✗ failed", "reason": str(e)})
@@ -203,7 +205,9 @@ def _run(
             found = product_adapter.search(company, cutoff=as_of)
             ext_sources.extend(found)
             log.info("ProductPageAdapter: %d pages for %s", len(found), company.symbol)
-            s1b_sub.append({"adapter": "ProductPageAdapter", "status": "✓ completed", "sources_found": len(found)})
+            s1b_sub.append({"adapter": "ProductPageAdapter",
+                            "status": "✓ completed" if found else "~ partial (0 sources)",
+                            "sources_found": len(found)})
         except Exception as e:
             log.warning("ProductPageAdapter failed: %s", e)
             s1b_sub.append({"adapter": "ProductPageAdapter", "status": "✗ failed", "reason": str(e)})
@@ -219,7 +223,9 @@ def _run(
             found = web_adapter.search(company, cutoff=as_of)
             ext_sources.extend(found)
             log.info("WebSearchAdapter: %d URLs for %s", len(found), company.symbol)
-            s1b_sub.append({"adapter": "WebSearchAdapter", "status": "✓ completed", "sources_found": len(found)})
+            s1b_sub.append({"adapter": "WebSearchAdapter",
+                            "status": "✓ completed" if found else "~ partial (0 sources)",
+                            "sources_found": len(found)})
         except Exception as e:
             log.warning("WebSearchAdapter failed: %s", e)
             s1b_sub.append({"adapter": "WebSearchAdapter", "status": "✗ failed", "reason": str(e)})
@@ -230,12 +236,8 @@ def _run(
         db.upsert_source(src, run.run_id)
     log.info("External sources total: %d", len(ext_sources))
 
-    has_any_ext = any(len(ext_sources) > 0 for _ in [1])
-    s1b_status = "completed" if has_any_ext else (
-        "partial" if any(s["status"].startswith("✓") for s in s1b_sub) else "partial"
-    )
     s1b.finish(
-        status=s1b_status,
+        status="completed" if ext_sources else "partial",
         total_external_sources=len(ext_sources),
         adapters=s1b_sub,
     )
@@ -273,6 +275,7 @@ def _run(
                 db.upsert_company(company)
             log.info("Peer selection complete: %d peers resolved", len(peer_identities))
             s1c.finish(
+                status="completed" if peer_identities else "partial",
                 peers_resolved=len(peer_identities),
                 peers=[p.symbol for p in peer_identities],
                 peer_filings_added=peer_filings_added,
