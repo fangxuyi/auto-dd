@@ -131,7 +131,7 @@ def _run(
         prompts_dir = out_dir / "prompts"
         llm = DryRunProvider(prompts_dir=prompts_dir)
     else:
-        llm = AnthropicProvider()
+        llm = AnthropicProvider(log_dir=out_dir)
 
     # Log run header — captured in run.log and console
     _log_run_header(
@@ -626,7 +626,7 @@ def report_only(
             from company_research.llm.dry_run import DryRunProvider
             llm = DryRunProvider(prompts_dir=out_dir / "prompts")
         else:
-            llm = AnthropicProvider()
+            llm = AnthropicProvider(log_dir=out_dir)
 
         _log_run_header(
             symbol=symbol, depth=depth, as_of=as_of,

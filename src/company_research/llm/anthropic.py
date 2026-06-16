@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -21,12 +23,16 @@ _MAX_TOKENS = 8192  # raised to avoid mid-JSON truncation
 class AnthropicProvider:
     """ReasoningProvider implementation using Anthropic Claude."""
 
-    def __init__(self, model_id: str | None = None) -> None:
+    def __init__(self, model_id: str | None = None, log_dir: Path | None = None) -> None:
         self.model_id = model_id or settings.model_id
         self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        self._call_log: Path | None = None
+        if log_dir is not None:
+            self._call_log = Path(log_dir) / "llm_calls.jsonl"
+            self._call_log.parent.mkdir(parents=True, exist_ok=True)
 
-    def _call(self, prompt: str) -> str:
-        log.debug("API call → model=%s prompt_chars=%d", self.model_id, len(prompt))
+    def _call(self, prompt: str, call_type: str = "unknown", extra: dict | None = None) -> str:
+        log.debug("API call → model=%s call_type=%s prompt_chars=%d", self.model_id, call_type, len(prompt))
         response = self._client.messages.create(
             model=self.model_id,
             max_tokens=_MAX_TOKENS,
@@ -37,7 +43,23 @@ class AnthropicProvider:
             "API response ← input_tokens=%d output_tokens=%d stop_reason=%s",
             usage.input_tokens, usage.output_tokens, response.stop_reason,
         )
-        return response.content[0].text  # type: ignore[index]
+        text = response.content[0].text  # type: ignore[index]
+        if self._call_log is not None:
+            entry: dict[str, Any] = {
+                "ts": datetime.utcnow().isoformat(),
+                "call_type": call_type,
+                "model": self.model_id,
+                "prompt_chars": len(prompt),
+                "prompt": prompt,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "stop_reason": response.stop_reason,
+            }
+            if extra:
+                entry.update(extra)
+            with self._call_log.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return text
 
     def _repair(self, previous: str, errors: str, schema_desc: str) -> str:
         return prompts.load(
@@ -73,7 +95,7 @@ class AnthropicProvider:
         )
 
         raw_facts: list[dict] = call_with_retry(
-            call_fn=self._call,
+            call_fn=lambda p: self._call(p, call_type="extract_facts", extra={"topic": topic}),
             repair_fn=self._repair,
             prompt=prompt,
             model_class=None,
@@ -129,7 +151,7 @@ class AnthropicProvider:
         )
 
         result: SectionConclusion = call_with_retry(
-            call_fn=self._call,
+            call_fn=lambda p: self._call(p, call_type="analyze_section", extra={"section": section}),
             repair_fn=self._repair,
             prompt=prompt,
             model_class=SectionConclusion,
@@ -160,7 +182,7 @@ class AnthropicProvider:
             fiscal_year_end=company.fiscal_year_end,
             conclusions_json=conclusions_json,
         )
-        result = self._call(prompt)
+        result = self._call(prompt, call_type="synthesize_report")
         log.info("synthesize_report complete (%d chars)", len(result))
         return result
 
@@ -179,7 +201,7 @@ class AnthropicProvider:
         prompt = prompts.load("detect_counterevidence", facts_json=facts_json)
 
         raw_list: list[dict] = call_with_retry(
-            call_fn=self._call,
+            call_fn=lambda p: self._call(p, call_type="detect_counterevidence"),
             repair_fn=self._repair,
             prompt=prompt,
             model_class=None,
