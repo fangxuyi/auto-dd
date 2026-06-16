@@ -17,7 +17,7 @@ from company_research.models.identity import CompanyIdentity, ResearchRun
 
 log = logging.getLogger(__name__)
 
-_MAX_TOKENS = 8192  # raised to avoid mid-JSON truncation
+_MAX_TOKENS = 16000  # 24 chunks × 2800 chars can produce 100+ facts; 8192 caused truncation
 
 
 class AnthropicProvider:
