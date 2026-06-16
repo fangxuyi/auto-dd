@@ -18,6 +18,7 @@ class CompanyIdentity(BaseModel):
     currency: str  # ISO 4217, e.g. "USD"
     ir_url: str | None = None
     filing_jurisdiction: str  # e.g. "US", "foreign_private_issuer"
+    peers: list[str] = Field(default_factory=list)  # resolved peer ticker symbols
     security_type: Literal[
         "operating_company", "ADR", "fund", "shell", "partnership", "unknown"
     ] = "unknown"
