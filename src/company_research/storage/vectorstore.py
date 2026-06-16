@@ -57,6 +57,7 @@ class VectorStore:
     ) -> None:
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
+        self.was_reset = False
         import chromadb
 
         vector_dir = base_dir / ".vector"
@@ -66,10 +67,42 @@ class VectorStore:
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", symbol.upper())[:63]
         if len(safe_name) < 3:
             safe_name = safe_name + "_co"
-        self._collection = self._client.get_or_create_collection(
-            name=safe_name,
-            metadata={"hnsw:space": "cosine"},
-        )
+
+        # Check existing collection for chunk param mismatch
+        existing = None
+        try:
+            existing = self._client.get_collection(name=safe_name)
+        except Exception:
+            pass
+
+        chunk_meta = {"chunk_size": chunk_size, "chunk_overlap": chunk_overlap}
+
+        if existing is not None:
+            stored = existing.metadata or {}
+            if "chunk_size" in stored and (
+                stored["chunk_size"] != chunk_size or stored.get("chunk_overlap") != chunk_overlap
+            ):
+                log.warning(
+                    "Chunk params changed for %s (size %s→%s, overlap %s→%s) — clearing collection for fresh reindex",
+                    symbol, stored["chunk_size"], chunk_size, stored.get("chunk_overlap"), chunk_overlap,
+                )
+                self._client.delete_collection(name=safe_name)
+                self._collection = self._client.create_collection(
+                    name=safe_name,
+                    metadata={"hnsw:space": "cosine", **chunk_meta},
+                )
+                self.was_reset = True
+            else:
+                self._collection = existing
+                if "chunk_size" not in stored:
+                    # Legacy collection — stamp params without clearing
+                    self._collection.modify(metadata={**stored, **chunk_meta})
+        else:
+            self._collection = self._client.create_collection(
+                name=safe_name,
+                metadata={"hnsw:space": "cosine", **chunk_meta},
+            )
+
         self._symbol = symbol
 
     def index_document(

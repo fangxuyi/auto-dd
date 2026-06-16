@@ -335,8 +335,9 @@ def _run(
             log.debug("Document %s (%s, %d bytes)", source.source_id, cache_tag, raw_doc.size_bytes)
             norm_doc = _adapter.normalize(raw_doc)
             target_vs = peer_vector_store if source.is_peer else vector_store
-            if is_new:
-                # doc_id is content_hash so chunk IDs are stable — skip if unchanged
+            if is_new or target_vs.was_reset:
+                # doc_id is content_hash so chunk IDs are stable — skip if unchanged.
+                # was_reset=True means chunk params changed and collection was cleared; force reindex.
                 n_chunks = target_vs.index_document(
                     doc_id=norm_doc.doc_id,
                     text=norm_doc.text,
@@ -352,7 +353,7 @@ def _run(
                 log.info("Indexed %d chunks from %s into %s collection", n_chunks, source.source_type, collection)
             else:
                 n_chunks = 0
-                log.info("Skipped indexing %s — content unchanged (cached)", source.title[:60])
+                log.info("Skipped indexing %s — content unchanged, chunk params match", source.title[:60])
             fetch_detail.append({"title": source.title, "type": source.source_type, "chunks": n_chunks, "cache": cache_tag})
             indexed += 1
         except Exception as e:
