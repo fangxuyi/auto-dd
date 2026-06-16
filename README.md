@@ -2,6 +2,8 @@
 
 Reproducible CLI pipeline that produces cited, evidence-grounded product-and-business fundamentals reports for public US companies. Every fact in the output traces back to a stored source; the report generator never browses the web.
 
+---
+
 ## What it does
 
 1. Resolves a ticker to a `CompanyIdentity` via SEC EDGAR
@@ -11,14 +13,15 @@ Reproducible CLI pipeline that produces cited, evidence-grounded product-and-bus
 5. Extracts XBRL financial metrics and RAG-grounded facts via LLM
 6. Detects contradictions, verifies citations, and runs QA gates
 7. Generates a structured Markdown report with citations
-8. Exports all artifacts to a timestamped output directory
+8. Maps the supply-chain value chain from EDGAR reverse lookup
+9. Exports a self-contained HTML report with interactive value chain graph and RAG Q&A
 
 ---
 
 ## Requirements
 
 - Python 3.11+
-- `ANTHROPIC_API_KEY` in environment (or `.env` file)
+- `ANTHROPIC_API_KEY` in environment or `.env` file
 - No other paid services or API keys required
 
 ---
@@ -35,26 +38,54 @@ pip install -e ".[dev]"
 
 ## Usage
 
-```bash
-export ANTHROPIC_API_KEY=sk-...
+### One command — full pipeline
 
-# Standard analysis (recommended starting point)
+```bash
+company-research research AAPL --depth quick
+```
+
+Runs **analyze → value-chain → HTML → RAG server** in sequence and opens the report in your browser. The browser report has four tabs: Report, Value Chain, Sources, Ask.
+
+Options:
+- `--depth quick|standard|deep` — research depth (default: `quick`)
+- `--no-value-chain` — skip the value chain step
+- `--no-serve` — generate everything but don't start the RAG server
+- `--port 7234` — RAG server port
+
+---
+
+### Individual commands
+
+```bash
+# Analyze only — produces report.md and all artifacts
 company-research analyze AAPL --depth standard --as-of 2026-06-15 --output ./research
 
-# Quick scan (~10 min, fewer sources, no web search)
-company-research analyze MSFT --depth quick --output ./research
+# Value chain — maps supply-chain relationships from EDGAR
+company-research value-chain AAPL --depth quick
 
-# Deep analysis (all sources, peer filings, LLM peer ranking)
-company-research analyze NVDA --depth deep --output ./research
+# Convert report.md to HTML (auto-detects value_chain_graph.json next to it)
+company-research to-html research/AAPL/2026-06-15/report.md
 
-# Dry run — builds prompts, skips LLM calls, writes run_flow.json
-company-research analyze AAPL --depth standard --dry-run --output ./research
-
-# Override RAG top-k
-company-research analyze AAPL --depth standard --rag-top-k 32 --output ./research
+# Start local RAG server for Q&A against indexed evidence
+company-research serve research/AAPL/2026-06-15/report.md --port 7234
 ```
 
 Output is written to `<output>/<SYMBOL>/<AS_OF_DATE>/`.
+
+---
+
+## HTML report
+
+`to-html` generates a self-contained HTML file with four tabs:
+
+| Tab | Contents |
+|---|---|
+| **Report** | Full research report with citations, conclusions, confidence ratings |
+| **Value Chain** | D3 force-directed supply-chain graph + upstream relationship table |
+| **Sources** | All indexed documents with type, publisher, date, and reliability tier |
+| **Ask** | Interactive RAG Q&A panel — type a question, get an evidence-grounded answer |
+
+The Ask tab connects to the local RAG server (`company-research serve`). The command to start it is always visible on the Ask tab with a one-click Copy button.
 
 ---
 
@@ -63,7 +94,9 @@ Output is written to `<output>/<SYMBOL>/<AS_OF_DATE>/`.
 | File | Description |
 |---|---|
 | `report.md` | Full research report with citations |
-| `report.html` | Styled HTML version of the report |
+| `report.html` | Tabbed HTML report (value chain + RAG Q&A) |
+| `value_chain_report.md` | Value chain narrative and relationship table |
+| `value_chain_graph.json` | Graph nodes and edges (embedded in HTML) |
 | `run_flow.json` | Per-step trace: status, timing, metrics |
 | `sources.json` | All sources used in this run |
 | `evidence.jsonl` | Extracted facts with source citations |
@@ -77,26 +110,6 @@ Output is written to `<output>/<SYMBOL>/<AS_OF_DATE>/`.
 | `prompts/` | LLM prompt inputs saved in dry-run mode |
 | `run.log` | Full pipeline log |
 
-### `run_flow.json` step codes
-
-| Step | Name |
-|---|---|
-| `1` | Entity Resolution |
-| `1b` | External Source Discovery (IR, product, web) |
-| `1c` | Peer Selection |
-| `2` | EDGAR Source Acquisition |
-| `3-4` | Fetch / Parse / Index |
-| `5` | XBRL Metric Extraction |
-| `6` | RAG Fact Extraction |
-| `7` | Contradiction Detection |
-| `8` | Citation Verification |
-| `9` | Section Analysis |
-| `10` | Report Generation |
-| `11` | QA Checks |
-| `12` | Export |
-
-Status symbols: `✓ completed`, `~ partial`, `– skipped`, `✗ failed`
-
 ---
 
 ## Architecture
@@ -106,20 +119,36 @@ CLI (click)
 └── Pipeline orchestrator (pipeline.py)
     ├── 1.  EntityResolver      → CompanyIdentity         (EDGAR company_tickers.json)
     ├── 1b. External adapters   → SourceRecord[]
-    │       ├── IRPageAdapter   (company investor-relations site)
+    │       ├── IRPageAdapter      (investor-relations site)
     │       ├── ProductPageAdapter (product / pricing pages)
-    │       └── WebSearchAdapter   (DuckDuckGo HTML, no API key)
+    │       └── WebSearchAdapter   (DuckDuckGo, no API key)
     ├── 1c. PeerSelector        → CompanyIdentity[]       (DDG + EDGAR lookup)
     ├── 2.  EdgarAdapter        → SourceRecord[]          (10-K, 10-Q filings)
-    ├── 3-4. RawCache + Parsers → NormalizedDocument[]    (HTML, PDF, XBRL, text)
+    ├── 3-4. RawCache + Parsers → NormalizedDocument[]
     ├── 5.  XBRLExtractor       → MetricRecord[]
-    ├── 6.  FactExtractor (LLM) → EvidenceFact[]          (RAG over vector store)
+    ├── 6.  FactExtractor (LLM) → EvidenceFact[]
     ├── 7.  ContradictionDetector (LLM)
     ├── 8.  CitationResolver    (deterministic)
     ├── 9.  SectionAnalyzer (LLM)
-    ├── 10. ReportGenerator (LLM) → report.md             (reads evidence store only)
+    ├── 10. ReportGenerator (LLM) → report.md
     ├── 11. QARunner            (deterministic)
-    └── 12. Exporter
+    └── 12. Exporter            → report.html, value_chain_graph.json, sources.json …
+
+Value chain pipeline (pipeline_value_chain.py)
+    ├── VC-2.  Decompose value chain layers (industry template)
+    ├── VC-3.  Forward EDGAR discovery (target's own filings)
+    ├── VC-3b. Reverse EDGAR lookup ("Apple Inc." mentions in third-party 10-Ks)
+    ├── VC-4.  Resolve candidates to EDGAR entities
+    ├── VC-5.  Build relationship records
+    ├── VC-6.  Assess dependencies
+    ├── VC-7.  Build profit pool stubs
+    ├── VC-8.  Identify chokepoints
+    ├── VC-9.  Assemble graph → value_chain_graph.json
+    └── VC-10. Write value_chain_report.md
+
+Reporting
+    ├── html_export.py  convert()  → self-contained 4-tab HTML
+    └── serve.py        RagServer  → GET /health, POST /ask (VectorStore + Claude)
 ```
 
 ### Source reliability tiers
@@ -136,14 +165,12 @@ CLI (click)
 
 - **RawCache** — SQLite content-addressed store; deduplicates by SHA-256 of fetched bytes
 - **Database** — SQLite WAL-mode store for runs, sources, facts, metrics, peers, contradictions, QA
-- **Vector store** — ChromaDB per-symbol, rebuilt on first run, reused on subsequent runs
-- All storage paths default to `~/.company_research/`
+- **VectorStore** — ChromaDB, shared per output root, queried per-run via title allowlist
+- All storage paths default to `./research/`
 
 ---
 
 ## Research profiles
-
-Three depth profiles are defined in `config/research_profiles.yaml`:
 
 | Setting | `quick` | `standard` | `deep` |
 |---|---|---|---|
@@ -176,15 +203,14 @@ ruff check src/ tests/
 mypy src/
 ```
 
-Tests are in `tests/unit/` (100 tests) and `tests/integration/`. All unit tests use mocked HTTP and no live credentials.
-
 ---
 
 ## Key design constraints
 
-- **Evidence-only output**: the report generator reads only from the SQLite evidence store. It never browses the web.
-- **No paid dependencies**: DuckDuckGo HTML scraping requires no API key. All other sources are public (SEC EDGAR).
-- **Graded degradation**: failures in external adapters (network errors, CAPTCHA/rate-limiting) are logged at WARNING and do not abort the run.
+- **Evidence-only output**: the report generator reads only from the SQLite evidence store — never browses the web.
+- **RAG Q&A scoped to run**: the `/ask` endpoint filters vector store results to documents indexed in the current run, using the `sources.json` title allowlist.
+- **No paid dependencies**: DuckDuckGo requires no API key. All other sources are public (SEC EDGAR).
+- **Graded degradation**: failures in external adapters are logged at WARNING and do not abort the run.
 - **Idempotent storage**: all cache and DB writes are content-hash deduplicated.
 - **Audit trail**: every fact carries `source_id`, `location`, `period`, `unit`, `extraction_method`, `confidence`. Every run records `model_id`, prompt versions, and config.
 - **No credential commits**: never commit `.env` files, API keys, cookies, or copyrighted paid reports.
@@ -196,31 +222,35 @@ Tests are in `tests/unit/` (100 tests) and `tests/integration/`. All unit tests 
 ```
 auto-dd/
 ├── config/
-│   ├── research_profiles.yaml   # depth profiles
-│   └── source_priority.yaml     # source selection weights
-├── guidelines/                  # analysis template (read before changing research logic)
-├── prompts/                     # versioned LLM prompts (YAML front matter)
+│   ├── research_profiles.yaml      # depth profiles
+│   └── source_priority.yaml        # source selection weights
+├── guidelines/                     # analysis template
+├── prompts/                        # versioned LLM prompts (YAML front matter)
 ├── src/company_research/
-│   ├── cli.py                   # click entrypoint
-│   ├── pipeline.py              # orchestrator
-│   ├── pipeline_flow.py         # run_flow.json recorder
-│   ├── config.py                # profile loader
-│   ├── models/                  # Pydantic schemas
-│   ├── identity/                # entity resolver (EDGAR)
-│   ├── sources/                 # SourceAdapter implementations
+│   ├── cli.py                      # click entrypoint (analyze, value-chain, to-html, serve, research)
+│   ├── pipeline.py                 # main orchestrator
+│   ├── pipeline_value_chain.py     # value chain orchestrator
+│   ├── pipeline_flow.py            # run_flow.json recorder
+│   ├── config.py                   # profile loader
+│   ├── models/                     # Pydantic schemas
+│   ├── identity/                   # entity resolver (EDGAR)
+│   ├── sources/                    # SourceAdapter implementations
 │   │   ├── edgar.py
-│   │   ├── web_search.py        # DuckDuckGo HTML
-│   │   ├── ir_page.py           # investor-relations crawler
-│   │   ├── product_page.py      # product/pricing crawler
-│   │   └── peer_selector.py     # DDG + EDGAR peer resolution
-│   ├── parsing/                 # HTML, PDF, XBRL, text parsers
-│   ├── extraction/              # fact extractor, XBRL extractor
-│   ├── analysis/                # section analyzer, contradiction detector
-│   ├── reporting/               # report generator, formatter
-│   ├── validation/              # QA gates, citation resolver
-│   ├── llm/                     # Anthropic LLM interface
-│   └── storage/                 # SQLite DB, raw cache, export
+│   │   ├── web_search.py           # DuckDuckGo (no API key)
+│   │   ├── ir_page.py              # investor-relations crawler
+│   │   ├── product_page.py         # product/pricing crawler
+│   │   └── peer_selector.py        # DDG + EDGAR peer resolution
+│   ├── parsing/                    # HTML, PDF, XBRL, text parsers
+│   ├── extraction/                 # fact extractor, XBRL extractor
+│   ├── analysis/                   # section analyzer, contradiction detector
+│   ├── reporting/
+│   │   ├── generator.py            # LLM report writer
+│   │   ├── html_export.py          # 4-tab self-contained HTML
+│   │   └── serve.py                # local RAG server (stdlib http.server)
+│   ├── validation/                 # QA gates, citation resolver
+│   ├── llm/                        # Anthropic LLM interface
+│   └── storage/                    # SQLite DB, raw cache, vector store, export
 └── tests/
-    ├── unit/                    # mocked, no network (100 tests)
-    └── integration/             # requires network and API key
+    ├── unit/                       # mocked, no network
+    └── integration/                # requires network and API key
 ```
