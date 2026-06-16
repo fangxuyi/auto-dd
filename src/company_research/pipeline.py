@@ -24,9 +24,10 @@ from company_research.sources.ir_page import IRPageAdapter
 from company_research.sources.peer_selector import PeerSelector
 from company_research.sources.product_page import ProductPageAdapter
 from company_research.sources.web_search import WebSearchAdapter
+from company_research.pipeline_flow import RunFlowRecorder
 from company_research.storage.cache import RawCache
 from company_research.storage.database import Database
-from company_research.storage.export import export_qa, export_run
+from company_research.storage.export import export_flow, export_qa, export_run
 from company_research.storage.vectorstore import VectorStore
 from company_research.validation.citations import verify_citations
 from company_research.validation.qa import run_qa
@@ -131,18 +132,7 @@ def _run(
         out_dir=out_dir,
     )
 
-    # Step 1: Entity resolution
-    log.info("Step 1/12 — Entity resolution")
-    log.info("Resolving entity for %s...", symbol)
-    company = resolve(symbol)
-    db.upsert_company(company)
-    log.info(
-        "Resolved: %s | exchange=%s | CIK=%s | currency=%s | fiscal_year_end=%s",
-        company.issuer_name, company.exchange, company.cik,
-        company.currency, company.fiscal_year_end,
-    )
-
-    # Create run record
+    # Create run record (needed for run_id before flow recorder)
     run = ResearchRun(
         symbol=symbol.upper(),
         depth=depth,
@@ -154,12 +144,43 @@ def _run(
         config_hash=settings.config_hash(),
         output_dir=str(out_dir),
     )
+
+    flow = RunFlowRecorder(
+        run_id=run.run_id,
+        symbol=symbol.upper(),
+        depth=depth,
+        as_of_date=as_of.isoformat(),
+        dry_run=dry_run,
+        model_id=settings.model_id,
+    )
+
+    # Step 1: Entity resolution
+    log.info("Step 1/12 — Entity resolution")
+    s1 = flow.begin("1", "Entity Resolution")
+    log.info("Resolving entity for %s...", symbol)
+    company = resolve(symbol)
+    db.upsert_company(company)
+    log.info(
+        "Resolved: %s | exchange=%s | CIK=%s | currency=%s | fiscal_year_end=%s",
+        company.issuer_name, company.exchange, company.cik,
+        company.currency, company.fiscal_year_end,
+    )
+    s1.finish(
+        issuer_name=company.issuer_name,
+        cik=company.cik,
+        exchange=company.exchange,
+        ir_url=company.ir_url or "not found in EDGAR",
+    )
+
     db.insert_run(run)
     log.info("Run created: run_id=%s", run.run_id)
+    log.info("Flow recorder initialised")
 
     # Step 1b: External source discovery
     log.info("Step 1b/12 — External source discovery")
+    s1b = flow.begin("1b", "External Source Discovery")
     ext_sources: list[SourceRecord] = []
+    s1b_sub: list[dict] = []
 
     if profile.get("enable_ir_pages", True):
         ir_adapter = IRPageAdapter(cache=cache, max_pages=profile.get("max_ir_pages", 3))
@@ -167,8 +188,12 @@ def _run(
             found = ir_adapter.search(company, cutoff=as_of)
             ext_sources.extend(found)
             log.info("IRPageAdapter: %d pages for %s", len(found), company.symbol)
+            s1b_sub.append({"adapter": "IRPageAdapter", "status": "✓ completed", "sources_found": len(found)})
         except Exception as e:
             log.warning("IRPageAdapter failed: %s", e)
+            s1b_sub.append({"adapter": "IRPageAdapter", "status": "✗ failed", "reason": str(e)})
+    else:
+        s1b_sub.append({"adapter": "IRPageAdapter", "status": "– skipped", "reason": "disabled in profile"})
 
     if profile.get("enable_product_pages", False):
         product_adapter = ProductPageAdapter(
@@ -178,8 +203,12 @@ def _run(
             found = product_adapter.search(company, cutoff=as_of)
             ext_sources.extend(found)
             log.info("ProductPageAdapter: %d pages for %s", len(found), company.symbol)
+            s1b_sub.append({"adapter": "ProductPageAdapter", "status": "✓ completed", "sources_found": len(found)})
         except Exception as e:
             log.warning("ProductPageAdapter failed: %s", e)
+            s1b_sub.append({"adapter": "ProductPageAdapter", "status": "✗ failed", "reason": str(e)})
+    else:
+        s1b_sub.append({"adapter": "ProductPageAdapter", "status": "– skipped", "reason": "disabled in profile"})
 
     if profile.get("enable_web_search", False):
         web_adapter = WebSearchAdapter(
@@ -190,22 +219,38 @@ def _run(
             found = web_adapter.search(company, cutoff=as_of)
             ext_sources.extend(found)
             log.info("WebSearchAdapter: %d URLs for %s", len(found), company.symbol)
+            s1b_sub.append({"adapter": "WebSearchAdapter", "status": "✓ completed", "sources_found": len(found)})
         except Exception as e:
             log.warning("WebSearchAdapter failed: %s", e)
+            s1b_sub.append({"adapter": "WebSearchAdapter", "status": "✗ failed", "reason": str(e)})
+    else:
+        s1b_sub.append({"adapter": "WebSearchAdapter", "status": "– skipped", "reason": "disabled in profile"})
 
     for src in ext_sources:
         db.upsert_source(src, run.run_id)
     log.info("External sources total: %d", len(ext_sources))
 
+    has_any_ext = any(len(ext_sources) > 0 for _ in [1])
+    s1b_status = "completed" if has_any_ext else (
+        "partial" if any(s["status"].startswith("✓") for s in s1b_sub) else "partial"
+    )
+    s1b.finish(
+        status=s1b_status,
+        total_external_sources=len(ext_sources),
+        adapters=s1b_sub,
+    )
+
     # Step 1c: Peer selection and peer EDGAR acquisition
     peer_identities: list[CompanyIdentity] = []
     if profile.get("enable_peer_search", True):
         log.info("Step 1c/12 — Peer selection (max_peers=%d)", profile.get("max_competitors", 5))
+        s1c = flow.begin("1c", "Peer Selection")
         peer_selector = PeerSelector(
             cache=cache,
             max_peers=profile.get("max_competitors", 5),
             max_peer_filings=profile.get("max_peer_filings", 3),
         )
+        peer_filings_added = 0
         try:
             peer_results = peer_selector.select(company, cutoff=as_of)
             for peer_identity, peer_sources in peer_results:
@@ -214,6 +259,7 @@ def _run(
                 for ps in peer_sources:
                     db.upsert_source(ps, run.run_id)
                 ext_sources.extend(peer_sources)
+                peer_filings_added += len(peer_sources)
                 db.upsert_peer(
                     run.run_id,
                     peer_identity.symbol,
@@ -226,13 +272,21 @@ def _run(
                 )
                 db.upsert_company(company)
             log.info("Peer selection complete: %d peers resolved", len(peer_identities))
+            s1c.finish(
+                peers_resolved=len(peer_identities),
+                peers=[p.symbol for p in peer_identities],
+                peer_filings_added=peer_filings_added,
+            )
         except Exception as e:
             log.warning("Peer selection failed: %s", e)
+            s1c.finish(status="failed", peers_resolved=0, error=str(e))
     else:
         log.info("Step 1c/12 — Peer selection skipped (disabled in profile)")
+        flow.skip("1c", "Peer Selection", "disabled in profile")
 
-    # Step 2: Source acquisition
+    # Step 2: EDGAR source acquisition
     log.info("Step 2/12 — Source acquisition (max_filings=%d)", profile.get("max_filings", 20))
+    s2 = flow.begin("2", "EDGAR Source Acquisition")
     edgar = EdgarAdapter(cache=cache, max_filings=profile.get("max_filings", 20))
     sources = edgar.search(company, cutoff=as_of)
     log.info("Found %d EDGAR sources after priority sort", len(sources))
@@ -240,6 +294,9 @@ def _run(
         log.debug("  Source %02d: [%s] %s", i, src.source_type, src.title)
     for source in sources:
         db.upsert_source(source, run.run_id)
+    from collections import Counter
+    form_counts = dict(Counter(s.source_type for s in sources))
+    s2.finish(sources_found=len(sources), form_types=form_counts)
 
     # Merge external + EDGAR sources for fetch/parse/index
     sources = ext_sources + sources
@@ -249,7 +306,9 @@ def _run(
 
     # Step 3+4: Fetch, parse, index
     log.info("Step 3+4/12 — Fetch, parse, and vector-index %d sources", len(sources))
+    s34 = flow.begin("3-4", "Fetch / Parse / Index")
     indexed, skipped = 0, 0
+    fetch_detail: list[dict] = []
     for source in sources:
         log.info("Fetching [%s] %s", source.source_type, source.title)
         try:
@@ -271,18 +330,28 @@ def _run(
                 },
             )
             log.info("Indexed %d chunks from %s (%s)", n_chunks, source.source_type, source.source_id)
+            fetch_detail.append({"title": source.title, "type": source.source_type, "chunks": n_chunks, "cache": cache_tag})
             indexed += 1
         except Exception as e:
             log.error("Failed to fetch/parse/index %s: %s", source.url, e)
+            fetch_detail.append({"title": source.title, "type": source.source_type, "status": "✗ failed", "error": str(e)})
             skipped += 1
 
     log.info(
         "Indexing complete: %d indexed, %d skipped — vector store total=%d chunks",
         indexed, skipped, vector_store.count,
     )
+    s34.finish(
+        status="completed" if skipped == 0 else "partial",
+        indexed=indexed,
+        skipped=skipped,
+        total_chunks=vector_store.count,
+        sources=fetch_detail,
+    )
 
     # Step 5: XBRL metrics
     log.info("Step 5/12 — XBRL financial metric extraction")
+    s5 = flow.begin("5", "XBRL Metric Extraction")
     try:
         company_facts = get_company_facts(company.cik)
         xbrl_source = SourceRecord(
@@ -305,8 +374,10 @@ def _run(
         for metric in metrics:
             db.insert_metric(metric)
         log.info("Stored %d XBRL metric observations", len(metrics))
+        s5.finish(metrics_stored=len(metrics))
     except Exception as e:
         log.warning("XBRL extraction failed: %s", e)
+        s5.finish(status="failed", error=str(e))
 
     # Step 6: RAG fact extraction
     target_sections = profile.get("sections", ["company_snapshot"])
@@ -317,7 +388,9 @@ def _run(
         "Step 6/12 — RAG fact extraction | sections=%d | rag_top_k=%d",
         len(target_sections), effective_rag_top_k,
     )
+    s6 = flow.begin("6", "RAG Fact Extraction")
     all_facts: list[EvidenceFact] = []
+    section_facts: dict[str, int] = {}
     for section in target_sections:
         try:
             facts = extract_and_store(
@@ -330,35 +403,52 @@ def _run(
                 k=effective_rag_top_k,
             )
             all_facts.extend(facts)
+            section_facts[section] = len(facts)
             log.debug("Section '%s' → %d facts (running total=%d)", section, len(facts), len(all_facts))
         except Exception as e:
             log.error("Fact extraction failed for section '%s': %s", section, e)
+            section_facts[section] = 0
+            s6.warn(f"section '{section}' failed: {e}")
 
     log.info("Fact extraction complete: %d facts across %d sections", len(all_facts), len(target_sections))
+    s6.finish(
+        status="completed" if dry_run else ("completed" if all_facts else "partial"),
+        facts_extracted=len(all_facts),
+        dry_run_prompts_saved=len(target_sections) if dry_run else 0,
+        sections=section_facts,
+    )
 
     # Step 7: Contradiction detection
     log.info("Step 7/12 — Contradiction detection (%d facts)", len(all_facts))
     if all_facts:
+        s7 = flow.begin("7", "Contradiction Detection")
         try:
             contradictions = llm.detect_counterevidence(all_facts, run.run_id)
             for c in contradictions:
                 db.insert_contradiction(c)
             log.info("Detected %d contradictions", len(contradictions))
+            s7.finish(contradictions_found=len(contradictions))
         except Exception as e:
             log.error("Contradiction detection failed: %s", e)
+            s7.finish(status="failed", error=str(e))
     else:
         log.warning("No facts available — skipping contradiction detection")
+        flow.skip("7", "Contradiction Detection", "no facts extracted")
 
     # Step 8: Citation verification
     log.info("Step 8/12 — Citation verification")
+    s8 = flow.begin("8", "Citation Verification")
     try:
-        verified, failed = verify_citations(run.run_id, db, cache)
-        log.info("Citations: %d verified, %d failed", verified, failed)
+        verified, failed_cit = verify_citations(run.run_id, db, cache)
+        log.info("Citations: %d verified, %d failed", verified, failed_cit)
+        s8.finish(verified=verified, failed=failed_cit)
     except Exception as e:
         log.error("Citation verification failed: %s", e)
+        s8.finish(status="failed", error=str(e))
 
     # Step 9: Section analysis
     log.info("Step 9/12 — Section analysis (%d sections)", len(target_sections))
+    s9 = flow.begin("9", "Section Analysis")
     analyze_all_sections(
         sections=target_sections,
         facts=all_facts,
@@ -366,30 +456,43 @@ def _run(
         db=db,
         llm=llm,
     )
+    s9.finish(sections_analyzed=len(target_sections))
 
     # Step 10: Report generation
     log.info("Step 10/12 — Report generation")
+    s10 = flow.begin("10", "Report Generation")
     try:
         report_md = generate_report(run=run, company=company, db=db, llm=llm)
         db_sources = db.get_sources(run.run_id)
         write_report(report_md=report_md, sources=db_sources, out_dir=out_dir)
         report_path = out_dir / "report.md"
+        word_count = len(report_md.split())
         log.info(
             "Report written: %s (%d chars, %d words)",
-            report_path, len(report_md), len(report_md.split()),
+            report_path, len(report_md), word_count,
         )
+        s10.finish(word_count=word_count, char_count=len(report_md))
     except Exception as e:
         log.error("Report generation failed: %s", e)
+        s10.finish(status="failed", error=str(e))
 
     # Step 11: QA
     log.info("Step 11/12 — QA checks")
+    s11 = flow.begin("11", "QA Checks")
     qa_result = run_qa(run.run_id, db, out_dir=out_dir)
     for check, passed in qa_result.checks.items():
         level = logging.INFO if passed else logging.WARNING
         log.log(level, "  QA %-40s %s", check, "PASS" if passed else "FAIL")
+    qa_summary = {k: ("PASS" if v else "FAIL") for k, v in qa_result.checks.items()}
+    s11.finish(
+        status="completed" if qa_result.passed else "partial",
+        passed=qa_result.passed,
+        checks=qa_summary,
+    )
 
     # Step 12: Export
     log.info("Step 12/12 — Export to %s", out_dir)
+    s12 = flow.begin("12", "Export")
     export_run(run.run_id, db, out_dir)
     export_qa(qa_result, out_dir)
 
@@ -397,6 +500,16 @@ def _run(
     db.update_run_status(run.run_id, status, datetime.utcnow().isoformat())
     run.status = status
     run.completed_at = datetime.utcnow()
+
+    flow.finish_run(status)
+    export_flow(flow, out_dir)
+
+    files_written = [
+        "sources.json", "evidence.jsonl", "metrics.csv", "contradictions.json",
+        "open_questions.json", "conclusions.json", "company_profile.json",
+        "peers.json", "qa_report.json", "run_flow.json",
+    ]
+    s12.finish(files_written=files_written)
 
     if qa_result.passed:
         log.info("=== Run COMPLETED (run_id=%s) ===", run.run_id)
