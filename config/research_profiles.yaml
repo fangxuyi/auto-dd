@@ -1,7 +1,7 @@
 defaults:
   chunk_size: 2800          # chars per chunk (~400-450 tokens); tuned for SEC filing density
   chunk_overlap: 350        # overlap to avoid splitting mid-disclosure
-  rag_top_k: 32             # chunks retrieved per section (fewer needed with larger chunks)
+  rag_top_k: 12             # chunks retrieved per section (fewer needed with larger chunks)
 
 profiles:
   quick:
@@ -33,7 +33,7 @@ profiles:
     lookback_years: 5
     max_filings: 20         # ~5 years of 10-K + 10-Q
     max_competitors: 5
-    rag_top_k: 32           # chunks retrieved per section
+    rag_top_k: 12           # chunks retrieved per section
     sections:
       - company_snapshot
       - core_product
@@ -68,7 +68,7 @@ profiles:
     lookback_years: 10
     max_filings: 50
     max_competitors: 10
-    rag_top_k: 48           # chunks retrieved per section
+    rag_top_k: 12           # chunks retrieved per section
     sections: all
     target_words_min: 0     # no cap — determined by evidence
     target_words_max: 0
