@@ -336,9 +336,11 @@ def _run(
             log.debug("Document %s (%s, %d bytes)", source.source_id, cache_tag, raw_doc.size_bytes)
             norm_doc = _adapter.normalize(raw_doc)
             target_vs = peer_vector_store if source.is_peer else vector_store
-            if is_new or target_vs.was_reset:
-                # doc_id is content_hash so chunk IDs are stable — skip if unchanged.
-                # was_reset=True means chunk params changed and collection was cleared; force reindex.
+            # Index when: doc is new to the DB, VectorStore was just cleared, or
+            # doc is already in the DB but somehow missing from the VectorStore
+            # (happens when the VectorStore was rebuilt after a prior run indexed the doc).
+            needs_index = is_new or target_vs.was_reset or not target_vs.has_document(norm_doc.doc_id)
+            if needs_index:
                 n_chunks = target_vs.index_document(
                     doc_id=norm_doc.doc_id,
                     text=norm_doc.text,
@@ -354,7 +356,7 @@ def _run(
                 log.info("Indexed %d chunks from %s into %s collection", n_chunks, source.source_type, collection)
             else:
                 n_chunks = 0
-                log.info("Skipped indexing %s — content unchanged, chunk params match", source.title[:60])
+                log.info("Skipped indexing %s — content unchanged, already in VectorStore", source.title[:60])
             fetch_detail.append({"title": source.title, "type": source.source_type, "chunks": n_chunks, "cache": cache_tag})
             indexed += 1
         except Exception as e:

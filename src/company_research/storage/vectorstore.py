@@ -179,6 +179,18 @@ class VectorStore:
             offset += batch
         return sorted(seen.values(), key=lambda d: d.get("published_date", ""), reverse=True)
 
+    def has_document(self, doc_id: str) -> bool:
+        """Return True if at least one chunk for this doc_id exists in the collection."""
+        try:
+            res = self._collection.get(
+                where={"doc_id": {"$eq": doc_id}},
+                limit=1,
+                include=[],
+            )
+            return len(res["ids"]) > 0
+        except Exception:
+            return False
+
     @property
     def count(self) -> int:
         return self._collection.count()
