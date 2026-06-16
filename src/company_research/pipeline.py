@@ -532,8 +532,15 @@ def _run_analysis(
         # Use all sources for the symbol (not just this run_id) so report_only runs
         # can resolve citations from 10-Ks indexed in a previous analyze run.
         db_sources = db.get_sources_for_symbol(symbol)
+        conclusion_dicts = db.get_conclusions(run.run_id)
         contradiction_dicts = [c.model_dump() if hasattr(c, "model_dump") else dict(c) for c in contradictions]
-        write_report(report_md=report_md, sources=db_sources, out_dir=out_dir, contradictions=contradiction_dicts)
+        write_report(
+            report_md=report_md,
+            sources=db_sources,
+            out_dir=out_dir,
+            contradictions=contradiction_dicts,
+            conclusions=conclusion_dicts,
+        )
         report_path = out_dir / "report.md"
         word_count = len(report_md.split())
         log.info(

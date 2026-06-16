@@ -4,22 +4,37 @@ import re
 from pathlib import Path
 
 
+_SECTION_LABELS: dict[str, str] = {
+    "company_snapshot": "Company Snapshot",
+    "core_product": "Core Product",
+    "competitive_landscape": "Competitive Landscape",
+    "financial_overview": "Financial Overview",
+    "risk_profile": "Risk Profile",
+    "management": "Management",
+    "value_chain": "Value Chain",
+}
+
+
 def write_report(
     report_md: str,
     sources: list[dict],
     out_dir: Path,
     contradictions: list[dict] | None = None,
+    conclusions: list[dict] | None = None,
 ) -> None:
     """Write report.md and executive_summary.md to out_dir.
 
-    Citation tags `[src:SOURCE_ID]` are replaced with short readable references
-    using the sources list from the DB. If contradictions are provided, a
-    flagged-contradictions section is appended to the report.
+    Citation tags ``[src:SOURCE_ID]`` are replaced with short readable references
+    using the sources list from the DB.  Bare ``[UUID]`` citations emitted by the
+    synthesis LLM are resolved against either the source map or, when the UUID
+    belongs to a section conclusion, against the conclusions list.
+    If contradictions are provided, a flagged-contradictions section is appended.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     source_map = {s["source_id"]: s for s in sources}
-    resolved = _resolve_citations(report_md, source_map)
+    conclusion_map = {c["conclusion_id"]: c for c in (conclusions or [])}
+    resolved = _resolve_citations(report_md, source_map, conclusion_map)
 
     if contradictions:
         resolved = resolved.rstrip() + "\n\n" + _format_contradictions_md(contradictions)
@@ -67,11 +82,26 @@ def _format_contradictions_md(contradictions: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _resolve_citations(text: str, source_map: dict[str, dict]) -> str:
-    """Replace [src:SOURCE_ID] tags with readable short references."""
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
 
-    def _replace(m: re.Match) -> str:  # type: ignore[type-arg]
-        src_id = m.group(1)
+
+def _resolve_citations(
+    text: str,
+    source_map: dict[str, dict],
+    conclusion_map: dict[str, dict] | None = None,
+) -> str:
+    """Replace citation tags with readable short references.
+
+    Handles:
+    - ``[src:SOURCE_ID]`` — canonical format pointing to a source record
+    - bare ``[UUID]`` — emitted by the synthesis LLM; resolved against
+      source_map first, then conclusion_map (section analysis back-references)
+    """
+    conclusion_map = conclusion_map or {}
+
+    def _format_source(src_id: str) -> str:
         src = source_map.get(src_id)
         if not src:
             return f"[{src_id}]"
@@ -80,7 +110,24 @@ def _resolve_citations(text: str, source_map: dict[str, dict]) -> str:
         short = title[:60] + ("…" if len(title) > 60 else "")
         return f"[{short}, {date}]" if date else f"[{short}]"
 
-    return re.sub(r"\[src:([^\]]+)\]", _replace, text)
+    def _format_conclusion(c: dict) -> str:
+        section = c.get("section", "")
+        label = _SECTION_LABELS.get(section, section.replace("_", " ").title())
+        return f"[{label} analysis]"
+
+    # Pass 1: canonical [src:SOURCE_ID]
+    text = re.sub(r"\[src:([^\]]+)\]", lambda m: _format_source(m.group(1)), text)
+
+    # Pass 2: bare [UUID] — resolve against sources then conclusions
+    def _bare(m: re.Match) -> str:  # type: ignore[type-arg]
+        uid = m.group(1)
+        if uid in source_map:
+            return _format_source(uid)
+        if uid in conclusion_map:
+            return _format_conclusion(conclusion_map[uid])
+        return m.group(0)  # leave truly unknown UUIDs untouched
+
+    return re.sub(r"\[(" + _UUID_RE.pattern + r")\]", _bare, text)
 
 
 def _extract_executive_summary(report_md: str) -> str:
