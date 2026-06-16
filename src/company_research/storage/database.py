@@ -446,6 +446,25 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def get_sources_for_symbol(self, symbol: str) -> list[dict]:
+        """Return all sources across every run for a given symbol, deduplicated by source_id."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT s.* FROM sources s
+                   JOIN runs r ON s.run_id = r.run_id
+                   WHERE r.symbol = ?
+                   ORDER BY s.published_date DESC""",
+                (symbol.upper(),),
+            ).fetchall()
+            seen: set[str] = set()
+            result: list[dict] = []
+            for row in rows:
+                d = dict(row)
+                if d["source_id"] not in seen:
+                    seen.add(d["source_id"])
+                    result.append(d)
+            return result
+
     # --- documents ---
 
     def upsert_document(self, doc: RawDocument) -> bool:

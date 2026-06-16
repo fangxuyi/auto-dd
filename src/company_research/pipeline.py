@@ -529,7 +529,9 @@ def _run_analysis(
     s10 = flow.begin("10", "Report Generation")
     try:
         report_md = generate_report(run=run, company=company, db=db, llm=llm)
-        db_sources = db.get_sources(run.run_id)
+        # Use all sources for the symbol (not just this run_id) so report_only runs
+        # can resolve citations from 10-Ks indexed in a previous analyze run.
+        db_sources = db.get_sources_for_symbol(symbol)
         contradiction_dicts = [c.model_dump() if hasattr(c, "model_dump") else dict(c) for c in contradictions]
         write_report(report_md=report_md, sources=db_sources, out_dir=out_dir, contradictions=contradiction_dicts)
         report_path = out_dir / "report.md"
@@ -560,7 +562,7 @@ def _run_analysis(
     # Step 12: Export
     log.info("Step 12/12 — Export to %s", out_dir)
     s12 = flow.begin("12", "Export")
-    export_run(run.run_id, db, out_dir)
+    export_run(run.run_id, db, out_dir, symbol=symbol)
     export_qa(qa_result, out_dir)
     monitoring = build_monitoring_dashboard(run.run_id, symbol.upper(), as_of, db)
     export_monitoring(monitoring, out_dir)
