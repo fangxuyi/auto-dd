@@ -111,10 +111,18 @@ def _run(
 
     db = Database(db_path)
     cache = RawCache(cache_root)
+    chunk_size = profile.get("chunk_size", 2800)
+    chunk_overlap = profile.get("chunk_overlap", 350)
     # Own-company docs (10-Ks, IR pages, web search about target)
-    vector_store = VectorStore(base_dir=output_root, symbol=symbol)
+    vector_store = VectorStore(
+        base_dir=output_root, symbol=symbol,
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+    )
     # Peer/competitor filings — separate collection, not used for report generation
-    peer_vector_store = VectorStore(base_dir=output_root, symbol=symbol + "_peers")
+    peer_vector_store = VectorStore(
+        base_dir=output_root, symbol=symbol + "_peers",
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+    )
 
     llm: ReasoningProvider
     if dry_run:
