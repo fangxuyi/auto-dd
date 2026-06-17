@@ -273,7 +273,7 @@ def _run(
                 db.upsert_company(peer_identity)
                 for ps in peer_sources:
                     tagged = ps.model_copy(update={"is_peer": True})
-                    db.upsert_source(tagged, run.run_id)
+                    db.upsert_source(tagged, run.run_id, is_peer=True)
                     ext_sources.append(tagged)
                 peer_filings_added += len(peer_sources)
                 db.upsert_peer(

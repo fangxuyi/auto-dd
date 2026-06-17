@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS sources (
     period_covered TEXT,
     company_or_external TEXT NOT NULL,
     reliability_tier INTEGER NOT NULL,
+    is_peer INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (run_id) REFERENCES runs(run_id)
 );
 
@@ -357,6 +358,10 @@ class Database:
     def _init_schema(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # Migrations for columns added after initial schema
+            existing = {r[1] for r in conn.execute("PRAGMA table_info(sources)").fetchall()}
+            if "is_peer" not in existing:
+                conn.execute("ALTER TABLE sources ADD COLUMN is_peer INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def _conn(self) -> Generator[sqlite3.Connection, None, None]:
@@ -424,10 +429,11 @@ class Database:
 
     # --- sources ---
 
-    def upsert_source(self, source: SourceRecord, run_id: str) -> None:
+    def upsert_source(self, source: SourceRecord, run_id: str, is_peer: bool = False) -> None:
         with self._conn() as conn:
             conn.execute(
-                """INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """INSERT INTO sources
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(source_id) DO NOTHING""",
                 (
                     source.source_id, run_id, source.title, source.publisher,
@@ -436,6 +442,7 @@ class Database:
                     source.accessed_date.isoformat(), source.source_type,
                     source.primary_or_secondary, source.period_covered,
                     source.company_or_external, source.reliability_tier,
+                    1 if is_peer else 0,
                 ),
             )
 
@@ -447,12 +454,12 @@ class Database:
             return [dict(r) for r in rows]
 
     def get_sources_for_symbol(self, symbol: str) -> list[dict]:
-        """Return all sources across every run for a given symbol, deduplicated by source_id."""
+        """Return own-company sources across every run for a symbol, deduplicated by URL."""
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT s.* FROM sources s
                    JOIN runs r ON s.run_id = r.run_id
-                   WHERE r.symbol = ?
+                   WHERE r.symbol = ? AND s.is_peer = 0
                    ORDER BY s.published_date DESC""",
                 (symbol.upper(),),
             ).fetchall()
@@ -460,8 +467,9 @@ class Database:
             result: list[dict] = []
             for row in rows:
                 d = dict(row)
-                if d["source_id"] not in seen:
-                    seen.add(d["source_id"])
+                key = d["url"] or d["source_id"]
+                if key not in seen:
+                    seen.add(key)
                     result.append(d)
             return result
 
