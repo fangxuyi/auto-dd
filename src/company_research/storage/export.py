@@ -10,12 +10,13 @@ from company_research.pipeline_flow import RunFlowRecorder
 from company_research.storage.database import Database
 
 
-def export_run(run_id: str, db: Database, out_dir: Path) -> None:
+def export_run(run_id: str, db: Database, out_dir: Path, symbol: str | None = None) -> None:
     """Write all structured output files for a completed run."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # sources.json
-    sources = db.get_sources(run_id)
+    # sources.json — use all sources for the symbol so report_only runs include
+    # 10-Ks indexed in a previous analyze run, not just this run's registrations.
+    sources = db.get_sources_for_symbol(symbol) if symbol else db.get_sources(run_id)
     (out_dir / "sources.json").write_text(
         json.dumps(sources, indent=2, default=str), encoding="utf-8"
     )

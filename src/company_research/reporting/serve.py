@@ -130,19 +130,19 @@ class RagServer(HTTPServer):
         import anthropic
 
         vs = self._get_vs()
-        # For runs indexed with the own/peers split, the collection only has
-        # own-company docs — no filtering needed. The title allowlist is a
-        # fallback for older runs where peers were mixed into the same collection.
+        # Hybrid re-ranking: semantic similarity + recency (weight=0.3).
+        # The title allowlist is a fallback for old runs where peer docs were
+        # mixed into the same collection; new runs use a separate peers collection.
         allowed_titles = self._run_source_titles()
-        raw_chunks = vs.retrieve(question, k=k * 4 if allowed_titles else k)
-
         if allowed_titles:
+            # Fetch extra candidates so the title filter has enough to choose from
+            raw_chunks = vs.retrieve(question, k=k * 4)
             chunks = [
                 c for c in raw_chunks
                 if c["metadata"].get("title") in allowed_titles
             ][:k]
         else:
-            chunks = raw_chunks[:k]
+            chunks = vs.retrieve(question, k=k)
 
         if not chunks:
             return {
@@ -176,9 +176,11 @@ class RagServer(HTTPServer):
         sources = [
             {
                 "rank": i + 1,
-                "score": round(c["score"], 3),
+                "score": round(c.get("hybrid_score", c["score"]), 3),
+                "semantic_score": round(c["score"], 3),
                 "source_type": c["metadata"].get("source_type", ""),
                 "title": c["metadata"].get("title", "")[:80],
+                "published_date": c["metadata"].get("published_date", ""),
                 "snippet": c["text"][:280] + ("…" if len(c["text"]) > 280 else ""),
             }
             for i, c in enumerate(chunks)

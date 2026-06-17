@@ -126,8 +126,27 @@ class VectorStore:
         log.info("Indexed %d chunks for doc %s into %s", len(chunks), doc_id[:8], self._symbol)
         return len(chunks)
 
-    def retrieve(self, query: str, k: int = 12) -> list[dict[str, Any]]:
-        """Return top-k most relevant chunks for a natural-language query."""
+    def retrieve(
+        self,
+        query: str,
+        k: int = 12,
+        recency_weight: float = 0.3,
+        candidate_multiplier: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Return top-k chunks using hybrid semantic + recency re-ranking.
+
+        Fetches ``k * candidate_multiplier`` candidates by embedding similarity,
+        then re-ranks by::
+
+            hybrid_score = (1 - recency_weight) * semantic_score
+                         +      recency_weight  * recency_score
+
+        where ``recency_score`` is linearly normalised over the candidate set's
+        date range (most recent = 1.0, oldest = 0.0).  Set ``recency_weight=0``
+        to get pure semantic ranking.
+        """
+        from datetime import date as _date
+
         n = self._collection.count()
         if n == 0:
             return []
@@ -135,24 +154,54 @@ class VectorStore:
         model = _get_model()
         embedding = model.encode([query], show_progress_bar=False)[0].tolist()
 
+        fetch_k = min(k * candidate_multiplier, n) if recency_weight > 0 else min(k, n)
         results = self._collection.query(
             query_embeddings=[embedding],
-            n_results=min(k, n),
+            n_results=fetch_k,
             include=["documents", "metadatas", "distances"],
         )
 
-        chunks: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         for text, meta, dist in zip(
             results["documents"][0],
             results["metadatas"][0],
             results["distances"][0],
         ):
-            chunks.append({
+            candidates.append({
                 "text": text,
                 "metadata": meta,
                 "score": round(1.0 - float(dist), 4),
             })
-        return chunks
+
+        if recency_weight <= 0 or len(candidates) <= 1:
+            return candidates[:k]
+
+        # Parse published_date from chunk metadata
+        def _parse(raw: str) -> _date | None:
+            if not raw:
+                return None
+            try:
+                return _date.fromisoformat(raw[:10])
+            except ValueError:
+                return None
+
+        dated = [_parse(c["metadata"].get("published_date", "")) for c in candidates]
+        valid = [d for d in dated if d is not None]
+        if not valid:
+            return candidates[:k]
+
+        min_d, max_d = min(valid), max(valid)
+        date_range = max((_date.toordinal(max_d) - _date.toordinal(min_d)), 1)
+
+        reranked: list[dict[str, Any]] = []
+        for chunk, d in zip(candidates, dated):
+            sem = chunk["score"]
+            rec = (_date.toordinal(d) - _date.toordinal(min_d)) / date_range if d else 0.0
+            hybrid = (1.0 - recency_weight) * sem + recency_weight * rec
+            reranked.append({**chunk, "hybrid_score": round(hybrid, 4)})
+
+        reranked.sort(key=lambda x: x["hybrid_score"], reverse=True)
+        return reranked[:k]
 
     def list_documents(self) -> list[dict]:
         """Return one metadata record per unique document (deduplicated by title)."""
@@ -178,6 +227,18 @@ class VectorStore:
                     }
             offset += batch
         return sorted(seen.values(), key=lambda d: d.get("published_date", ""), reverse=True)
+
+    def has_document(self, doc_id: str) -> bool:
+        """Return True if at least one chunk for this doc_id exists in the collection."""
+        try:
+            res = self._collection.get(
+                where={"doc_id": {"$eq": doc_id}},
+                limit=1,
+                include=[],
+            )
+            return len(res["ids"]) > 0
+        except Exception:
+            return False
 
     @property
     def count(self) -> int:

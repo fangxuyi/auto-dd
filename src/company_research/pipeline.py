@@ -273,7 +273,7 @@ def _run(
                 db.upsert_company(peer_identity)
                 for ps in peer_sources:
                     tagged = ps.model_copy(update={"is_peer": True})
-                    db.upsert_source(tagged, run.run_id)
+                    db.upsert_source(tagged, run.run_id, is_peer=True)
                     ext_sources.append(tagged)
                 peer_filings_added += len(peer_sources)
                 db.upsert_peer(
@@ -336,9 +336,11 @@ def _run(
             log.debug("Document %s (%s, %d bytes)", source.source_id, cache_tag, raw_doc.size_bytes)
             norm_doc = _adapter.normalize(raw_doc)
             target_vs = peer_vector_store if source.is_peer else vector_store
-            if is_new or target_vs.was_reset:
-                # doc_id is content_hash so chunk IDs are stable — skip if unchanged.
-                # was_reset=True means chunk params changed and collection was cleared; force reindex.
+            # Index when: doc is new to the DB, VectorStore was just cleared, or
+            # doc is already in the DB but somehow missing from the VectorStore
+            # (happens when the VectorStore was rebuilt after a prior run indexed the doc).
+            needs_index = is_new or target_vs.was_reset or not target_vs.has_document(norm_doc.doc_id)
+            if needs_index:
                 n_chunks = target_vs.index_document(
                     doc_id=norm_doc.doc_id,
                     text=norm_doc.text,
@@ -354,7 +356,7 @@ def _run(
                 log.info("Indexed %d chunks from %s into %s collection", n_chunks, source.source_type, collection)
             else:
                 n_chunks = 0
-                log.info("Skipped indexing %s — content unchanged, chunk params match", source.title[:60])
+                log.info("Skipped indexing %s — content unchanged, already in VectorStore", source.title[:60])
             fetch_detail.append({"title": source.title, "type": source.source_type, "chunks": n_chunks, "cache": cache_tag})
             indexed += 1
         except Exception as e:
@@ -484,6 +486,7 @@ def _run_analysis(
     )
 
     # Step 7: Contradiction detection
+    contradictions: list = []
     log.info("Step 7/12 — Contradiction detection (%d facts)", len(all_facts))
     if all_facts:
         s7 = flow.begin("7", "Contradiction Detection")
@@ -528,8 +531,18 @@ def _run_analysis(
     s10 = flow.begin("10", "Report Generation")
     try:
         report_md = generate_report(run=run, company=company, db=db, llm=llm)
-        db_sources = db.get_sources(run.run_id)
-        write_report(report_md=report_md, sources=db_sources, out_dir=out_dir)
+        # Use all sources for the symbol (not just this run_id) so report_only runs
+        # can resolve citations from 10-Ks indexed in a previous analyze run.
+        db_sources = db.get_sources_for_symbol(symbol)
+        conclusion_dicts = db.get_conclusions(run.run_id)
+        contradiction_dicts = [c.model_dump() if hasattr(c, "model_dump") else dict(c) for c in contradictions]
+        write_report(
+            report_md=report_md,
+            sources=db_sources,
+            out_dir=out_dir,
+            contradictions=contradiction_dicts,
+            conclusions=conclusion_dicts,
+        )
         report_path = out_dir / "report.md"
         word_count = len(report_md.split())
         log.info(
@@ -558,7 +571,7 @@ def _run_analysis(
     # Step 12: Export
     log.info("Step 12/12 — Export to %s", out_dir)
     s12 = flow.begin("12", "Export")
-    export_run(run.run_id, db, out_dir)
+    export_run(run.run_id, db, out_dir, symbol=symbol)
     export_qa(qa_result, out_dir)
     monitoring = build_monitoring_dashboard(run.run_id, symbol.upper(), as_of, db)
     export_monitoring(monitoring, out_dir)
