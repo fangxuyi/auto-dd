@@ -333,6 +333,56 @@ def graph(
                 console.print(csv_path.read_text())
 
 
+@cli.command("update-value-chain")
+@click.argument("symbol")
+@click.option("--output", default="./research", show_default=True, help="Output root directory")
+@click.option(
+    "--depth", default="standard", show_default=True,
+    type=click.Choice(["quick", "standard", "deep"]),
+)
+@click.option("--as-of", "as_of", default=None, help="ISO date for as-of (default: today)")
+@click.option("--template", default=None, help="Industry template name override")
+@click.pass_context
+def update_value_chain(
+    ctx: click.Context,
+    symbol: str,
+    output: str,
+    depth: str,
+    as_of: str | None,
+    template: str | None,
+) -> None:
+    """Re-run value chain analysis and diff against prior run for SYMBOL."""
+    from company_research.pipeline_value_chain import run_update_value_chain
+    _setup_logging(ctx.obj.get("verbose", False))
+
+    as_of_date = date.fromisoformat(as_of) if as_of else date.today()
+    output_root = Path(output).expanduser().resolve()
+
+    try:
+        result = run_update_value_chain(
+            symbol=symbol.upper(),
+            depth=depth,
+            as_of=as_of_date,
+            output_root=output_root,
+            template_name=template,
+        )
+        diff = result.get("diff", {})
+        if diff.get("changes", 0) == 0 and diff.get("new_nodes", 0) == 0:
+            console.print(f"[green]No value chain changes detected for {symbol}[/green]")
+        else:
+            console.print(
+                f"[yellow]{symbol} value chain updated:[/yellow] "
+                f"{diff.get('changes', 0)} relationship changes, "
+                f"{diff.get('new_nodes', 0)} new entities, "
+                f"{diff.get('removed_nodes', 0)} removed"
+            )
+        out_dir = output_root / symbol.upper() / as_of_date.isoformat()
+        console.print(f"Diff report: {out_dir / 'value_chain_diff.md'}")
+    except Exception as exc:
+        console.print(f"[red]update-value-chain failed: {exc}[/red]")
+        raise SystemExit(1)
+
+
 @cli.command("to-html")
 @click.argument("report_md", type=click.Path(exists=True))
 @click.option(
