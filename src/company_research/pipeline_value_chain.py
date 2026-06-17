@@ -4,6 +4,10 @@ from __future__ import annotations
 import logging
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from company_research.models.value_chain_diff import VCGraphDiff
 
 from company_research.models.identity import CompanyIdentity, ResearchRun
 from company_research.models.value_chain import PublicEntityIdentity
@@ -129,6 +133,19 @@ def run_value_chain(
         len(candidates), len(candidates) - len(reverse_candidates), len(reverse_candidates),
     )
 
+    # VC-3c: external web discovery (VC-M3)
+    web_candidates: list = []
+    log.info("VC-3c: External web discovery for additional candidates")
+    try:
+        from company_research.value_chain.external_discovery import discover_from_web
+        web_candidates = discover_from_web(company, run_id, cache)
+        for c in web_candidates:
+            db.upsert_vc_candidate(c)
+        candidates.extend(web_candidates)
+        log.info("External web discovery added %d candidates", len(web_candidates))
+    except Exception as exc:
+        log.warning("External web discovery failed: %s", exc)
+
     # VC-4: resolve candidates to public entities (exact ticker + fuzzy name fallback)
     log.info("VC-4: Resolving candidates to EDGAR entities")
     resolved_pairs = resolve_candidates(candidates, db, max_resolve=80)
@@ -156,13 +173,24 @@ def run_value_chain(
     log.info("VC-6: Assessing dependencies")
     dependencies = [assess_dependency(rel, run_id, db) for rel in relationships]
 
-    # VC-7: profit pools
-    log.info("VC-7: Building profit pool stubs")
-    profit_pools = build_profit_pools(layers, run_id, db)
+    # VC-7: profit pools with XBRL enrichment (VC-M3)
+    log.info("VC-7: Building profit pools")
+    profit_pools = build_profit_pools(layers, run_id, db, relationships=relationships)
 
     # VC-8: chokepoints
     log.info("VC-8: Identifying chokepoints")
     chokepoints = identify_chokepoints(relationships, dependencies, run_id, db)
+
+    # VC-8b: LLM chokepoint enrichment (VC-M3)
+    if chokepoints:
+        log.info("VC-8b: Enriching %d chokepoints with LLM analysis", len(chokepoints))
+        try:
+            from company_research.value_chain.llm_synthesis import enrich_chokepoints_llm
+            chokepoints = enrich_chokepoints_llm(chokepoints, relationships, company)
+            for cp in chokepoints:
+                db.upsert_vc_chokepoint(cp)
+        except Exception as exc:
+            log.warning("LLM chokepoint enrichment failed: %s", exc)
 
     # VC-9: graph assembly
     log.info("VC-9: Assembling value chain graph")
@@ -175,6 +203,21 @@ def run_value_chain(
     )
     export_graph(graph, out_dir)
 
+    # VC-9b: LLM executive summary (VC-M3)
+    narrative: str | None = None
+    log.info("VC-9b: Synthesizing value chain narrative")
+    try:
+        from company_research.value_chain.llm_synthesis import synthesize_vc_narrative
+        narrative = synthesize_vc_narrative(
+            symbol=symbol.upper(),
+            company_name=company.issuer_name,
+            graph=graph,
+            profit_pools=profit_pools,
+            chokepoints=chokepoints,
+        )
+    except Exception as exc:
+        log.warning("VC narrative synthesis failed: %s", exc)
+
     # VC-10: report
     log.info("VC-10: Writing value chain report")
     write_value_chain_report(
@@ -184,6 +227,8 @@ def run_value_chain(
         profit_pools=profit_pools,
         chokepoints=chokepoints,
         out_dir=out_dir,
+        narrative=narrative,
+        external_candidate_count=len(web_candidates),
     )
 
     # VC-11: QA
@@ -207,3 +252,151 @@ def run_value_chain(
         "qa_passed": qa.passed,
         "qa_failures": qa.critical_failures,
     }
+
+
+def run_update_value_chain(
+    symbol: str,
+    depth: str,
+    as_of: date,
+    output_root: Path,
+    template_name: str | None = None,
+) -> dict:
+    """
+    Incremental update: re-run the value chain pipeline, diff against the prior run,
+    write value_chain_diff.md. Returns the pipeline result dict with a 'diff' key added.
+    """
+    import json as _json
+
+    from company_research.models.value_chain import ValueChainGraph
+    from company_research.value_chain.graph_diff import diff_graphs
+    from company_research.value_chain.monitoring import extract_monitoring_indicators
+
+    db_path = output_root / "research.db"
+    db = Database(db_path)
+
+    # Load prior graph before running fresh pipeline
+    prior_graph: ValueChainGraph | None = None
+    prior_graph_data = db.get_latest_vc_graph_json(symbol, output_root)
+    if prior_graph_data:
+        try:
+            prior_graph = ValueChainGraph.model_validate(prior_graph_data)
+        except Exception as exc:
+            log.warning("Could not load prior graph: %s", exc)
+
+    # Fresh pipeline run
+    result = run_value_chain(
+        symbol=symbol, depth=depth, as_of=as_of,
+        output_root=output_root, template_name=template_name,
+    )
+
+    out_dir = output_root / symbol.upper() / as_of.isoformat()
+    new_graph_path = out_dir / "value_chain_graph.json"
+    if not new_graph_path.exists():
+        log.warning("New graph not found at %s", new_graph_path)
+        result["diff"] = {"changes": 0, "new_nodes": 0, "removed_nodes": 0}
+        return result
+
+    new_graph = ValueChainGraph.model_validate(
+        _json.loads(new_graph_path.read_text(encoding="utf-8"))
+    )
+
+    if prior_graph is None:
+        log.info("No prior graph found for %s — skipping diff", symbol)
+        result["diff"] = {"changes": 0, "new_nodes": 0, "removed_nodes": 0}
+        return result
+
+    graph_diff = diff_graphs(prior_graph, new_graph, as_of)
+    db.upsert_vc_graph_diff(graph_diff)
+
+    # Build monitoring indicators from the new graph's data
+    run = db.get_latest_run(symbol)
+    run_id = run["run_id"] if run else new_graph.run_id
+    from company_research.models.value_chain import ChokepointAssessment, CompanyRelationship
+
+    relationships_rows = db.get_vc_relationships(run_id)
+    relationships = [CompanyRelationship(**r) for r in relationships_rows]
+    chokepoints_rows = db.get_vc_chokepoints(run_id)
+
+    import json as _json2
+    chokepoints = []
+    for r in chokepoints_rows:
+        d = dict(r)
+        if isinstance(d.get("early_warning_indicators"), str):
+            d["early_warning_indicators"] = _json2.loads(d["early_warning_indicators"])
+        chokepoints.append(ChokepointAssessment(**d))
+
+    indicators = extract_monitoring_indicators(
+        run_id, symbol.upper(), new_graph, relationships, chokepoints
+    )
+
+    _write_vc_diff_report(symbol, as_of, graph_diff, indicators, out_dir)
+
+    result["diff"] = {
+        "changes": len(graph_diff.changes),
+        "new_nodes": len(graph_diff.new_node_names),
+        "removed_nodes": len(graph_diff.removed_node_names),
+        "monitoring_indicators": len(indicators),
+    }
+    return result
+
+
+def _write_vc_diff_report(
+    symbol: str,
+    as_of: date,
+    diff: "VCGraphDiff",
+    indicators: list,
+    out_dir: Path,
+) -> None:
+    """Write value_chain_diff.md to out_dir."""
+    lines = [
+        f"# {symbol} — Value Chain Update",
+        "",
+        f"**As of:** {as_of}  ",
+        f"**Prior run:** {diff.prior_run_id[:8]}  ",
+        f"**New run:** {diff.new_run_id[:8]}  ",
+        "",
+        "---",
+        "",
+    ]
+
+    if not diff.has_changes:
+        lines += ["## No Changes Detected", "", "Value chain graph is unchanged since last run.", ""]
+    else:
+        if diff.new_node_names:
+            lines += ["## New Entities", ""]
+            for name in diff.new_node_names:
+                lines.append(f"- **{name}** (new)")
+            lines.append("")
+
+        if diff.removed_node_names:
+            lines += ["## Removed Entities", ""]
+            for name in diff.removed_node_names:
+                lines.append(f"- ~~{name}~~ (no longer confirmed)")
+            lines.append("")
+
+        if diff.changes:
+            lines += [
+                "## Relationship Changes",
+                "",
+                "| Entity | Type | Change | Before | After |",
+                "|---|---|---|---|---|",
+            ]
+            for c in diff.changes:
+                before = c.prior_status or c.prior_confidence or "—"
+                after = c.new_status or c.new_confidence or "—"
+                lines.append(
+                    f"| {c.entity_name} | {c.relationship_type} | "
+                    f"{c.change_type} | {before} | {after} |"
+                )
+            lines.append("")
+
+    if indicators:
+        lines += ["## Monitoring Indicators", ""]
+        for ind in indicators:
+            urgency_tag = f"[{ind.urgency.upper()}]"
+            lines.append(f"- {urgency_tag} **{ind.entity_name}**: {ind.indicator}")
+            lines.append(f"  - Trigger: {ind.trigger}")
+        lines.append("")
+
+    (out_dir / "value_chain_diff.md").write_text("\n".join(lines), encoding="utf-8")
+    log.info("Value chain diff report written to %s", out_dir / "value_chain_diff.md")

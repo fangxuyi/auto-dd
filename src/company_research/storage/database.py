@@ -346,6 +346,19 @@ CREATE TABLE IF NOT EXISTS vc_graph_edges (
 CREATE INDEX IF NOT EXISTS idx_vc_relationships_run ON vc_relationships(run_id);
 CREATE INDEX IF NOT EXISTS idx_vc_candidates_run ON vc_relationship_candidates(run_id);
 CREATE INDEX IF NOT EXISTS idx_vc_entities_ticker ON vc_entities(ticker);
+
+CREATE TABLE IF NOT EXISTS vc_graph_diffs (
+    diff_id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    prior_run_id TEXT NOT NULL,
+    new_run_id TEXT NOT NULL,
+    as_of_date TEXT,
+    changes_json TEXT NOT NULL DEFAULT '[]',
+    new_node_names_json TEXT NOT NULL DEFAULT '[]',
+    removed_node_names_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_vc_graph_diffs_symbol ON vc_graph_diffs(symbol);
 """
 
 
@@ -869,7 +882,11 @@ class Database:
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO vc_chokepoints VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(chokepoint_id) DO NOTHING""",
+                   ON CONFLICT(chokepoint_id) DO UPDATE SET
+                     failure_mechanism=excluded.failure_mechanism,
+                     financial_effect=excluded.financial_effect,
+                     early_warning_indicators=excluded.early_warning_indicators,
+                     mitigation=excluded.mitigation""",
                 (
                     cp.chokepoint_id, cp.run_id, cp.chokepoint, cp.owner_or_controller,
                     cp.affected_product, cp.failure_mechanism, cp.replacement_time,
@@ -884,3 +901,48 @@ class Database:
                 "SELECT * FROM vc_chokepoints WHERE run_id=?", (run_id,)
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def upsert_vc_graph_diff(self, diff: "VCGraphDiff") -> None:
+        import json as _json
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO vc_graph_diffs
+                   (diff_id, symbol, prior_run_id, new_run_id, as_of_date,
+                    changes_json, new_node_names_json, removed_node_names_json)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(diff_id) DO UPDATE SET
+                     changes_json=excluded.changes_json,
+                     new_node_names_json=excluded.new_node_names_json,
+                     removed_node_names_json=excluded.removed_node_names_json""",
+                (
+                    diff.diff_id, diff.symbol, diff.prior_run_id, diff.new_run_id,
+                    str(diff.as_of_date),
+                    _json.dumps([c.model_dump() for c in diff.changes]),
+                    _json.dumps(diff.new_node_names),
+                    _json.dumps(diff.removed_node_names),
+                ),
+            )
+
+    def get_vc_graph_diff(self, symbol: str) -> dict | None:
+        """Return the most recent graph diff for a symbol."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT * FROM vc_graph_diffs WHERE symbol=?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (symbol.upper(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_latest_vc_graph_json(self, symbol: str, out_dir_root: "Path") -> dict | None:
+        """Load value_chain_graph.json from the most recent run directory for symbol."""
+        import json as _json
+        run = self.get_latest_run(symbol)
+        if run is None:
+            return None
+        path = out_dir_root / symbol.upper() / run["as_of_date"] / "value_chain_graph.json"
+        if not path.exists():
+            return None
+        try:
+            return _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
