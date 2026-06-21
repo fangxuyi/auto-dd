@@ -823,7 +823,17 @@ class Database:
             rows = conn.execute(
                 "SELECT * FROM vc_relationships WHERE run_id=?", (run_id,)
             ).fetchall()
-            return [dict(r) for r in rows]
+            result = []
+            for r in rows:
+                d = dict(r)
+                for field in ("source_ids", "source_locations"):
+                    if isinstance(d.get(field), str):
+                        try:
+                            d[field] = _json.loads(d[field])
+                        except Exception:
+                            d[field] = []
+                result.append(d)
+            return result
 
     def upsert_vc_relationship_evidence(self, ev: "RelationshipEvidence") -> None:
         with self._conn() as conn:
@@ -900,7 +910,16 @@ class Database:
             rows = conn.execute(
                 "SELECT * FROM vc_chokepoints WHERE run_id=?", (run_id,)
             ).fetchall()
-            return [dict(r) for r in rows]
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("early_warning_indicators"), str):
+                    try:
+                        d["early_warning_indicators"] = _json.loads(d["early_warning_indicators"])
+                    except Exception:
+                        d["early_warning_indicators"] = []
+                result.append(d)
+            return result
 
     def upsert_vc_graph_diff(self, diff: "VCGraphDiff") -> None:
         import json as _json
