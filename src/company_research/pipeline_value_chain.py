@@ -15,6 +15,7 @@ from company_research.value_chain.dependency import assess_dependency
 from company_research.value_chain.discovery import discover_from_sources
 from company_research.value_chain.edgar_reverse import discover_reverse_mentions
 from company_research.value_chain.graph import build_graph, export_graph
+from company_research.value_chain.product_extraction import extract_products
 from company_research.value_chain.profit_pools import build_profit_pools
 from company_research.value_chain.relationships import build_relationships
 from company_research.value_chain.reporting import write_value_chain_report
@@ -151,6 +152,10 @@ def run_value_chain(
         db=db,
         as_of=as_of,
     )
+
+    # VC-5b: extract product/service labels via Haiku 4.5
+    log.info("VC-5b: Extracting product/service labels")
+    extract_products(relationships, db, target_name=company.issuer_name)
 
     # VC-6: dependency assessments
     log.info("VC-6: Assessing dependencies")
