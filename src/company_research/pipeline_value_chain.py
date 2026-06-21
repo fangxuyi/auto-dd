@@ -15,6 +15,7 @@ from company_research.value_chain.dependency import assess_dependency
 from company_research.value_chain.discovery import discover_from_sources
 from company_research.value_chain.edgar_reverse import discover_reverse_mentions
 from company_research.value_chain.graph import build_graph, export_graph
+from company_research.value_chain.product_extraction import extract_products
 from company_research.value_chain.profit_pools import build_profit_pools
 from company_research.value_chain.relationships import build_relationships
 from company_research.value_chain.reporting import write_value_chain_report
@@ -152,6 +153,10 @@ def run_value_chain(
         as_of=as_of,
     )
 
+    # VC-5b: extract product/service labels via Haiku 4.5
+    log.info("VC-5b: Extracting product/service labels")
+    extract_products(relationships, db, target_name=company.issuer_name)
+
     # VC-6: dependency assessments
     log.info("VC-6: Assessing dependencies")
     dependencies = [assess_dependency(rel, run_id, db) for rel in relationships]
@@ -166,12 +171,23 @@ def run_value_chain(
 
     # VC-9: graph assembly
     log.info("VC-9: Assembling value chain graph")
+    # Pre-fetch evidence excerpts so they can be embedded in graph edges for tooltips
+    evidence_map: dict[str, str] = {}
+    with db._conn() as conn:
+        for rel in relationships:
+            row = conn.execute(
+                "SELECT excerpt FROM vc_relationship_evidence WHERE relationship_id=? LIMIT 1",
+                (rel.relationship_id,),
+            ).fetchone()
+            if row and row[0]:
+                evidence_map[rel.relationship_id] = row[0]
     graph = build_graph(
         run_id=run_id,
         symbol=symbol.upper(),
         as_of=as_of,
         relationships=relationships,
         entities=entities,
+        evidence_map=evidence_map,
     )
     export_graph(graph, out_dir)
 

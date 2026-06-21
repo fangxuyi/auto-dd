@@ -839,6 +839,13 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def update_relationship_product(self, relationship_id: str, product_or_service: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE vc_relationships SET product_or_service=? WHERE relationship_id=?",
+                (product_or_service, relationship_id),
+            )
+
     def upsert_vc_relationship_evidence(self, ev: "RelationshipEvidence") -> None:
         with self._conn() as conn:
             conn.execute(

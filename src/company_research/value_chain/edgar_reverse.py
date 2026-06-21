@@ -19,6 +19,25 @@ _MAX_RATE_SLEEP = 0.12  # EDGAR fair-use: ~8 req/s
 
 # Parse EDGAR display_names format: "Company Name  (TICKER)  (CIK 0000xxxxxxx)"
 _DISPLAY_RE = re.compile(r"^(.*?)\s+\(([A-Z0-9.]+)\)\s+\(CIK\s+(\d+)\)", re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(text: str) -> str:
+    return _HTML_TAG_RE.sub("", text).strip()
+
+
+def _extract_highlight(hit: dict) -> str:
+    """
+    Pull the first non-empty highlight snippet from an EDGAR FTS hit.
+    EDGAR wraps matched terms in <em> tags; we strip them.
+    Returns empty string if no highlight is present.
+    """
+    hl = hit.get("_highlight", {})
+    for key in ("file_date", "period_of_report", "content", "entity_name"):
+        snippets = hl.get(key, [])
+        if snippets:
+            return _strip_html(snippets[0])
+    return ""
 
 
 def _headers() -> dict[str, str]:
@@ -152,10 +171,16 @@ def discover_reverse_mentions(
                 file_date = src.get("file_date", "")
                 form = src.get("form", "")
                 ctx_phrase = "as a customer" if rel_type == "SUPPLIES" else "as a supplier"
-                excerpt = (
-                    f"{filer_name} ({ticker}) filed {form} ({file_date}) "
-                    f"mentioning '{company_name}' {ctx_phrase}"
-                )
+
+                # Prefer actual filing text from EDGAR FTS highlight over synthetic string
+                hl_text = _extract_highlight(hit)
+                if hl_text:
+                    excerpt = hl_text[:500]
+                else:
+                    excerpt = (
+                        f"{filer_name} ({ticker}) filed {form} ({file_date}) "
+                        f"mentioning '{company_name}' {ctx_phrase}"
+                    )
 
                 candidate = EntityCandidate(
                     run_id=run_id,

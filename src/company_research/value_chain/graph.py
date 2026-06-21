@@ -24,6 +24,7 @@ def build_graph(
     as_of: date,
     relationships: list[CompanyRelationship],
     entities: dict[str, PublicEntityIdentity],  # entity_id → entity
+    evidence_map: dict[str, str] | None = None,  # relationship_id → excerpt
 ) -> ValueChainGraph:
     """
     Assemble a ValueChainGraph from confirmed + inferred relationships.
@@ -78,6 +79,7 @@ def build_graph(
             end_date=rel.end_date,
             source_ids=rel.source_ids,
             last_verified_date=rel.last_verified_date,
+            source_excerpt=(evidence_map or {}).get(rel.relationship_id),
         )
         graph.edges.append(edge)
 
