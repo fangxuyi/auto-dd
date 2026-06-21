@@ -50,7 +50,7 @@ class IRPageAdapter:
     # ── SourceAdapter protocol ────────────────────────────────────────────────
 
     def search(self, company: CompanyIdentity, cutoff: date) -> list[SourceRecord]:
-        ir_url = company.ir_url or _discover_ir_url(company.issuer_name)
+        ir_url = company.ir_url
         if not ir_url:
             log.debug("No ir_url for %s — skipping IRPageAdapter", company.symbol)
             return []
