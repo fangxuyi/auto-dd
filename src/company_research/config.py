@@ -37,6 +37,10 @@ class Settings:
         return os.environ.get("COMPANY_RESEARCH_MODEL", "claude-sonnet-4-6")
 
     @property
+    def extraction_model_id(self) -> str:
+        return os.environ.get("COMPANY_RESEARCH_EXTRACTION_MODEL", "claude-haiku-4-5")
+
+    @property
     def edgar_user_agent(self) -> str:
         return os.environ.get(
             "EDGAR_USER_AGENT", "auto-dd openclawyi@gmail.com"

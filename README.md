@@ -1,265 +1,206 @@
 # auto-dd
 
-Reproducible CLI pipeline that produces cited, evidence-grounded product-and-business fundamentals reports for public US companies. Every fact in the output traces back to a stored source; the report generator never browses the web.
+**One command. 35 minutes. A fully cited due-diligence report on any public US company.**
+
+auto-dd is an open-source CLI that pulls SEC filings, investor-relations pages, and web sources, extracts structured facts with full citations, and produces a research report you can actually trust — every claim traces back to a primary source.
 
 ---
 
-## What it does
+## Quickstart
 
-1. Resolves a ticker to a `CompanyIdentity` via SEC EDGAR
-2. Discovers sources: EDGAR filings, investor-relations pages, product/pricing pages, web search results, and peer EDGAR filings
-3. Fetches and parses all sources into a content-addressed cache
-4. Indexes document chunks into a per-symbol vector store (ChromaDB)
-5. Extracts XBRL financial metrics and RAG-grounded facts via LLM
-6. Detects contradictions, verifies citations, and runs QA gates
-7. Generates a structured Markdown report with citations
-8. Maps the supply-chain value chain from EDGAR reverse lookup
-9. Exports a self-contained HTML report with interactive value chain graph and RAG Q&A
+```bash
+git clone https://github.com/fangxuyi/auto-dd.git
+cd auto-dd
+pip install -e ".[dev]"
+export ANTHROPIC_API_KEY=sk-...
+```
+
+```bash
+company-research research AAPL
+```
+
+That's it. The report opens in your browser when done.
+
+---
+
+## What you get
+
+A self-contained HTML report with four tabs, generated in ~35 min for ~$3:
+
+| Tab | What's inside |
+|---|---|
+| **Report** | 14-section research report — business model, product, customers, financials, competition, risks, scenarios — with inline citations and per-section confidence ratings |
+| **Value Chain** | Interactive force-directed graph of upstream suppliers (amber) and downstream customers (teal), sourced from SEC filings. Hover any row to see the exact filing sentence. |
+| **Sources** | Every document used: SEC filings, IR pages, product pages, web results — with reliability tier and date |
+| **Ask** | Chat with the evidence — type any question, get a grounded answer with inline citations from the indexed sources |
+
+A sample report for AAPL (`--depth standard`, 2026-06-21) is at [`AAPL_autodd_sample_report.html`](AAPL_autodd_sample_report.html).
+
+---
+
+## What the pipeline does
+
+```
+1. Resolve ticker → SEC EDGAR entity
+2. Fetch sources: 10-K/10-Q filings, IR pages, product pages, web search, peer filings
+3. Parse and index all documents into a local vector store
+4. Extract structured facts from every section (cited to source IDs)
+5. Detect contradictions across sources
+6. Analyze each report section — conclusions, confidence, counterevidence
+7. Synthesize the full report
+8. Map upstream/downstream value chain from reverse EDGAR lookup
+9. Export self-contained HTML + start local RAG server
+```
+
+Every fact carries: `source_id`, `location`, `period`, `unit`, `confidence`. The report generator reads only from the evidence store — it never browses the web.
 
 ---
 
 ## Requirements
 
 - Python 3.11+
-- `ANTHROPIC_API_KEY` in environment or `.env` file
-- No other paid services or API keys required
+- `ANTHROPIC_API_KEY` in environment or `.env`
+- No other paid services or API keys required (SEC EDGAR and DuckDuckGo are free)
 
 ---
 
-## Installation
+## Depth options
 
 ```bash
-git clone https://github.com/fangxuyi/auto-dd.git
-cd auto-dd
-pip install -e ".[dev]"
+company-research research AAPL                  # standard (default) — ~35 min, ~$3
+company-research research AAPL --depth quick    # fewer sources — ~20 min, ~$2
+company-research research AAPL --depth deep     # maximum sources — ~60 min, ~$6
 ```
+
+| | `quick` | `standard` | `deep` |
+|---|---|---|---|
+| Web search | — | ✓ | ✓ |
+| IR pages | ✓ | ✓ | ✓ |
+| Product pages | — | ✓ | ✓ |
+| Peer filings | 2 | 3 | 5 |
+| Estimated cost | ~$2–3 | ~$3–4 | ~$5–8 |
+| Estimated time | ~20 min | ~35 min | ~60 min |
 
 ---
 
-## Usage
-
-### One command — full pipeline
+## Options
 
 ```bash
-company-research research AAPL --depth quick
+company-research research AAPL --depth standard   # research depth
+company-research research AAPL --no-value-chain   # skip value chain step
+company-research research AAPL --no-serve         # generate HTML but don't start RAG server
+company-research research AAPL --port 8080        # RAG server port (default: 7234)
+company-research research AAPL --as-of 2026-01-01 # pin analysis date
+company-research research AAPL --rag-top-k 20     # chunks retrieved per section
 ```
-
-Runs **analyze → value-chain → HTML → RAG server** in sequence and opens the report in your browser. The browser report has four tabs: Report, Value Chain, Sources, Ask.
-
-Options:
-- `--depth quick|standard|deep` — research depth (default: `quick`)
-- `--no-value-chain` — skip the value chain step
-- `--no-serve` — generate everything but don't start the RAG server
-- `--port 7234` — RAG server port
-
----
-
-### Individual commands
-
-```bash
-# Analyze only — produces report.md and all artifacts
-company-research analyze AAPL --depth standard --as-of 2026-06-15 --output ./research
-
-# Value chain — maps supply-chain relationships from EDGAR
-company-research value-chain AAPL --depth quick
-
-# Convert report.md to HTML (auto-detects value_chain_graph.json next to it)
-company-research to-html research/AAPL/2026-06-15/report.md
-
-# Start local RAG server for Q&A against indexed evidence
-company-research serve research/AAPL/2026-06-15/report.md --port 7234
-```
-
-Output is written to `<output>/<SYMBOL>/<AS_OF_DATE>/`.
-
----
-
-## HTML report
-
-`to-html` generates a self-contained HTML file with four tabs:
-
-| Tab | Contents |
-|---|---|
-| **Report** | Full research report with citations, conclusions, confidence ratings |
-| **Value Chain** | D3 force-directed graph (amber = upstream suppliers, teal = downstream customers) + split relationship tables with Product/Service, Relationship, Confidence, and Materiality columns. Hover any table row to see the SEC filing reference that sourced the relationship. |
-| **Sources** | All indexed documents with type, publisher, date, and reliability tier |
-| **Ask** | Interactive RAG Q&A panel — type a question, get an evidence-grounded answer with inline citations |
-
-The Ask tab connects to the local RAG server (`company-research serve`). The command to start it is always visible on the Ask tab with a one-click Copy button.
 
 ---
 
 ## Output files
 
+All output is written to `./research/<SYMBOL>/<DATE>/`.
+
 | File | Description |
 |---|---|
-| `report.md` | Full research report with citations |
-| `report.html` | Tabbed HTML report (value chain + RAG Q&A) |
+| `report.html` | Self-contained 4-tab HTML report |
+| `report.md` | Full research report in Markdown with citations |
 | `value_chain_report.md` | Value chain narrative and relationship summary |
-| `value_chain_graph.json` | Graph nodes and edges with product/service labels and SEC filing excerpts (embedded in HTML) |
-| `value_chain_nodes.csv` | Node list: ticker, entity name, exchange, country |
-| `value_chain_edges.csv` | Edge list: relationship type, confidence, materiality |
-| `run_flow.json` | Per-step trace: status, timing, metrics |
-| `sources.json` | All sources used in this run |
-| `evidence.jsonl` | Extracted facts with source citations |
+| `evidence.jsonl` | All extracted facts with source citations |
 | `metrics.csv` | XBRL financial metrics (time-series) |
-| `peers.json` | Resolved peer companies |
-| `company_profile.json` | Entity metadata |
-| `contradictions.json` | Detected cross-source contradictions |
-| `conclusions.json` | Per-section LLM conclusions |
-| `open_questions.json` | Flagged gaps or uncertain items |
-| `qa_report.json` | QA gate results (pass/fail per check) |
-| `prompts/` | LLM prompt inputs saved in dry-run mode |
-| `run.log` | Full pipeline log |
+| `contradictions.json` | Cross-source contradictions detected |
+| `sources.json` | All indexed documents |
+| `qa_report.json` | QA gate results (pass/fail) |
+| `run_flow.json` | Per-step timing and metrics |
 
 ---
 
-## Architecture
+## Individual commands
 
-```
-CLI (click)
-└── Pipeline orchestrator (pipeline.py)
-    ├── 1.  EntityResolver      → CompanyIdentity         (EDGAR company_tickers.json)
-    ├── 1b. External adapters   → SourceRecord[]
-    │       ├── IRPageAdapter      (investor-relations site)
-    │       ├── ProductPageAdapter (product / pricing pages)
-    │       └── WebSearchAdapter   (DuckDuckGo, no API key)
-    ├── 1c. PeerSelector        → CompanyIdentity[]       (DDG + EDGAR lookup)
-    ├── 2.  EdgarAdapter        → SourceRecord[]          (10-K, 10-Q filings)
-    ├── 3-4. RawCache + Parsers → NormalizedDocument[]
-    ├── 5.  XBRLExtractor       → MetricRecord[]
-    ├── 6.  FactExtractor (LLM) → EvidenceFact[]
-    ├── 7.  ContradictionDetector (LLM)
-    ├── 8.  CitationResolver    (deterministic)
-    ├── 9.  SectionAnalyzer (LLM)
-    ├── 10. ReportGenerator (LLM) → report.md
-    ├── 11. QARunner            (deterministic)
-    └── 12. Exporter            → report.html, value_chain_graph.json, sources.json …
+For running steps separately or re-generating output:
 
-Value chain pipeline (pipeline_value_chain.py)
-    ├── VC-2.  Decompose value chain layers (industry template)
-    ├── VC-3.  Forward EDGAR discovery (target's own filings)
-    ├── VC-3b. Reverse EDGAR lookup ("Apple Inc." mentions in third-party 10-Ks)
-    │           Two queries: "customer" → SUPPLIES relationship
-    │                        "supplier" → CUSTOMER_OF relationship (downstream)
-    ├── VC-4.  Resolve candidates to EDGAR entities
-    ├── VC-5.  Build relationship records
-    ├── VC-5b. Product/service extraction (claude-haiku-4-5, ~$0.006/run)
-    │           Extracts 3–7 word label per relationship from filing excerpt
-    ├── VC-6.  Assess dependencies
-    ├── VC-7.  Build profit pool stubs
-    ├── VC-8.  Identify chokepoints
-    ├── VC-9.  Assemble graph → value_chain_graph.json (includes source_excerpt per edge)
-    └── VC-10. Write value_chain_report.md
+```bash
+# Analyze only
+company-research analyze AAPL --depth standard
 
-Reporting
-    ├── html_export.py  convert()  → self-contained 4-tab HTML
-    └── serve.py        RagServer  → GET /health, POST /ask (VectorStore + Claude)
+# Value chain only (requires a prior analyze run)
+company-research value-chain AAPL
+
+# Convert an existing report.md to HTML
+company-research to-html research/AAPL/2026-06-21/report.md
+
+# Start the RAG Q&A server
+company-research serve research/AAPL/2026-06-21/report.md --port 7234
 ```
 
-### Value chain relationships
-
-The reverse EDGAR lookup finds companies that name the target in their own SEC filings:
-
-| Filing says… | Relationship | Direction in graph |
-|---|---|---|
-| "Apple Inc. is our **customer**" | `SUPPLIES` | Filer → AAPL (upstream supplier, amber) |
-| "Apple Inc. is our **supplier**" | `CUSTOMER_OF` | AAPL → Filer (downstream customer, teal) |
-
-Each relationship is enriched with a product/service label extracted by `claude-haiku-4-5-20251001` from the filing excerpt, at roughly $0.006 per full run. The label and the raw filing sentence are both surfaced in the HTML report (hover any table row to see the source).
-
 ---
 
-### Source reliability tiers
+## Cost breakdown
 
-| Tier | Source type | Examples |
-|---|---|---|
-| 1 | SEC regulatory filings | 10-K, 10-Q |
-| 2 | Company operational pages | Product pages, pricing |
-| 4 | Credible third-party analysis | Research, analyst summaries |
-| 5 | Company IR communications | IR site, press releases, earnings releases |
-| 6 | General web media | News articles |
+LLM calls use Claude via the Anthropic API. All sources (SEC EDGAR, DuckDuckGo, IR/product pages) are free.
 
-### Storage
+**AAPL `--depth standard`** (measured, 2026-06-21):
 
-- **RawCache** — SQLite content-addressed store; deduplicates by SHA-256 of fetched bytes
-- **Database** — SQLite WAL-mode store for runs, sources, facts, metrics, peers, contradictions, QA
-- **VectorStore** — ChromaDB, shared per output root, queried per-run via title allowlist
-- All storage paths default to `./research/`
-
----
-
-## Research profiles
-
-| Setting | `quick` | `standard` | `deep` |
+| Step | Model | Time | Cost |
 |---|---|---|---|
-| `enable_web_search` | false | true | true |
-| `enable_ir_pages` | true | true | true |
-| `enable_product_pages` | false | true | true |
-| `enable_peer_search` | true | true | true |
-| `enable_peer_llm_ranking` | false | false | true |
-| `web_search_results_per_query` | 2 | 3 | 5 |
-| `max_ir_pages` | 1 | 3 | 8 |
-| `max_product_pages` | 1 | 2 | 5 |
-| `max_peer_filings` | 2 | 3 | 5 |
-| `rag_top_k` | 64 | 64 | 64 |
+| Source fetch + parse | — | 0.7 min | — |
+| Fact extraction (14 sections) | Haiku 4.5 | 10.6 min | ~$0.91 |
+| Contradiction detection | Haiku 4.5 | 0.2 min | ~$0.15 |
+| Section analysis (14 sections) | Sonnet 4.6 | 19.9 min | ~$0.86 |
+| Report synthesis | Sonnet 4.6 | 4.0 min | ~$0.21 |
+| Value chain extraction | Haiku 4.5 | — | ~$0.006 |
+| **Total** | | **~35 min** | **~$3** |
 
----
-
-## Estimated cost per run
-
-All LLM calls use Claude models via the Anthropic API. EDGAR, DuckDuckGo, IR pages, and product pages are free/public — no cost.
-
-**Baseline: AAPL `--depth quick`** (measured run, 2026-06-16)
-
-| Step | Model | Calls | Input tokens | Output tokens | Cost |
-|---|---|---|---|---|---|
-| `extract_facts` | Sonnet 4.6 | 18 | 183,597 | 145,649 | $2.74 |
-| `analyze_section` | Sonnet 4.6 | 17 | 160,719 | 24,945 | $0.86 |
-| `detect_counterevidence` | Sonnet 4.6 | 3 | 118,165 | 5,932 | $0.44 |
-| `synthesize_report` | Sonnet 4.6 | 2 | 12,537 | 11,581 | $0.21 |
-| `extract_products` (VC-5b) | Haiku 4.5 | ~56 | ~5,600 | ~560 | $0.006 |
-| **Total** | | **~96** | **~481K** | **~188K** | **~$4.26** |
-
-Pricing used: Sonnet 4.6 at $3.00/M input + $15.00/M output; Haiku 4.5 at $0.80/M input + $4.00/M output.
-
-**Scaling by depth**
-
-- `--depth quick`: ~$4–5 (measured above; web search disabled, fewer sources)
-- `--depth standard`: ~$8–12 (web search + product pages add more chunks → more `extract_facts` calls)
-- `--depth deep`: ~$15–25 (maximum sources, peer LLM ranking, additional peer filings)
-
-The dominant cost driver is `extract_facts` — it scales with the number of source chunks indexed. Each additional source (IR page, web search result, peer filing) adds roughly 8–15K input tokens to the extraction pass.
+Structured extraction uses Haiku 4.5; reasoning and synthesis use Sonnet 4.6. Both models are configurable via environment variables (`COMPANY_RESEARCH_EXTRACTION_MODEL`, `COMPANY_RESEARCH_MODEL`).
 
 ---
 
 ## Development
 
 ```bash
-# Unit tests — no network, no API key
-pytest tests/unit/ -v
-
-# Integration / live tests
-pytest tests/ -m live
-
-# Lint
+pytest tests/unit/     # unit tests — no network, no API key
+pytest tests/ -m live  # integration tests — requires network and key
 ruff check src/ tests/
-
-# Type check
 mypy src/
 ```
 
 ---
 
-## Key design constraints
+## Architecture
 
-- **Evidence-only output**: the report generator reads only from the SQLite evidence store — never browses the web.
-- **RAG Q&A scoped to run**: the `/ask` endpoint filters vector store results to documents indexed in the current run, using the `sources.json` title allowlist.
-- **No paid dependencies**: DuckDuckGo requires no API key. All other sources are public (SEC EDGAR).
-- **Graded degradation**: failures in external adapters are logged at WARNING and do not abort the run.
-- **Idempotent storage**: all cache and DB writes are content-hash deduplicated.
-- **Audit trail**: every fact carries `source_id`, `location`, `period`, `unit`, `extraction_method`, `confidence`. Every run records `model_id`, prompt versions, and config.
-- **No credential commits**: never commit `.env` files, API keys, cookies, or copyrighted paid reports.
+```
+CLI (click) — company-research research SYMBOL
+└── Pipeline orchestrator
+    ├── 1.   EntityResolver      → ticker → SEC EDGAR identity
+    ├── 1b.  External adapters   → IR pages, product pages, web search
+    ├── 1c.  PeerSelector        → peer company list
+    ├── 2.   EdgarAdapter        → 10-K, 10-Q filings
+    ├── 3-4. RawCache + Parsers  → HTML / PDF / XBRL / text
+    ├── 5.   XBRLExtractor       → financial metrics (time-series)
+    ├── 6.   FactExtractor       → EvidenceFact[] per section  [Haiku 4.5]
+    ├── 7.   ContradictionDetector                              [Haiku 4.5]
+    ├── 8.   CitationResolver    → verified source links
+    ├── 9.   SectionAnalyzer     → conclusions + confidence    [Sonnet 4.6]
+    ├── 10.  ReportGenerator     → report.md                   [Sonnet 4.6]
+    ├── 11.  QARunner            → pass/fail gates
+    └── 12.  Exporter            → report.html, sources.json, …
+
+Value chain pipeline
+    ├── Forward EDGAR discovery  → target's own filings
+    ├── Reverse EDGAR lookup     → third-party filings that name the target
+    ├── Entity resolution        → EDGAR-verified tickers
+    ├── Product/service labels   → 3–7 word label per edge   [Haiku 4.5]
+    └── Graph export             → value_chain_graph.json (embedded in HTML)
+```
+
+### Source reliability tiers
+
+| Tier | Type | Examples |
+|---|---|---|
+| 1 | SEC regulatory filings | 10-K, 10-Q |
+| 2 | Company operational pages | Product pages, pricing |
+| 4 | Third-party analysis | Research, analyst summaries |
+| 5 | Company IR communications | IR site, press releases |
+| 6 | General web media | News articles |
 
 ---
 
@@ -267,36 +208,24 @@ mypy src/
 
 ```
 auto-dd/
-├── config/
-│   ├── research_profiles.yaml      # depth profiles
-│   └── source_priority.yaml        # source selection weights
+├── config/                         # depth profiles, source priorities
 ├── guidelines/                     # analysis template
-├── prompts/                        # versioned LLM prompts (YAML front matter)
+├── prompts/                        # versioned LLM prompts
 ├── src/company_research/
-│   ├── cli.py                      # click entrypoint (analyze, value-chain, to-html, serve, research)
+│   ├── cli.py                      # CLI entrypoint
 │   ├── pipeline.py                 # main orchestrator
 │   ├── pipeline_value_chain.py     # value chain orchestrator
-│   ├── pipeline_flow.py            # run_flow.json recorder
-│   ├── config.py                   # profile loader
+│   ├── config.py                   # settings + profile loader
 │   ├── models/                     # Pydantic schemas
-│   ├── identity/                   # entity resolver (EDGAR)
-│   ├── sources/                    # SourceAdapter implementations
-│   │   ├── edgar.py
-│   │   ├── web_search.py           # DuckDuckGo (no API key)
-│   │   ├── ir_page.py              # investor-relations crawler
-│   │   ├── product_page.py         # product/pricing crawler
-│   │   └── peer_selector.py        # DDG + EDGAR peer resolution
+│   ├── sources/                    # EDGAR, web search, IR, product, peer adapters
 │   ├── parsing/                    # HTML, PDF, XBRL, text parsers
 │   ├── extraction/                 # fact extractor, XBRL extractor
 │   ├── analysis/                   # section analyzer, contradiction detector
-│   ├── reporting/
-│   │   ├── generator.py            # LLM report writer
-│   │   ├── html_export.py          # 4-tab self-contained HTML
-│   │   └── serve.py                # local RAG server (stdlib http.server)
+│   ├── reporting/                  # report generator, HTML export, RAG server
 │   ├── validation/                 # QA gates, citation resolver
-│   ├── llm/                        # Anthropic LLM interface
-│   └── storage/                    # SQLite DB, raw cache, vector store, export
+│   ├── llm/                        # Anthropic provider + retry logic
+│   └── storage/                    # SQLite, raw cache, ChromaDB vector store
 └── tests/
-    ├── unit/                       # mocked, no network
-    └── integration/                # requires network and API key
+    ├── unit/                       # no network required
+    └── integration/                # requires network + API key
 ```
