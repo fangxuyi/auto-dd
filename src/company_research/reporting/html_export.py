@@ -1265,20 +1265,21 @@ def _render_vc_panel(graph_data: dict | None) -> str:
     downstream_nodes.sort(key=lambda n: n.get("entity_name", ""))
 
     def _row(n: dict) -> str:
-        nid     = n.get("node_id", "")
-        e       = edge_by_src.get(nid)
+        nid      = n.get("node_id", "")
+        e        = edge_by_src.get(nid)
         ticker_t = html.escape(n.get("ticker") or "—")
         name_t   = html.escape(n.get("entity_name", ""))
         conf     = (e.get("confidence") or "medium") if e else "medium"
         conf_e   = html.escape(conf)
         rel      = (e.get("relationship_type") or "SUPPLIES") if e else "SUPPLIES"
-        rel_e    = html.escape(rel.replace("_", " "))
+        rel_e    = html.escape(rel.replace("_", " "))
         product  = (e.get("product_or_service") or "—") if e else "—"
         prod_e   = html.escape(str(product))
         mat      = (e.get("materiality") or "unknown") if e else "unknown"
         mat_e    = html.escape(mat)
+        excerpt  = html.escape((e.get("source_excerpt") or "") if e else "", quote=True)
         return (
-            f'<tr><td class="ticker">{ticker_t}</td>'
+            f'<tr data-excerpt="{excerpt}"><td class="ticker">{ticker_t}</td>'
             f"<td>{name_t}</td>"
             f"<td>{prod_e}</td>"
             f'<td class="rel-type">{rel_e}</td>'
@@ -1286,7 +1287,6 @@ def _render_vc_panel(graph_data: dict | None) -> str:
             f'<td><span class="vc-badge mat-{mat_e}">{mat_e}</span></td>'
             f"</tr>\n"
         )
-
     upstream_rows   = "".join(_row(n) for n in upstream_nodes)
     downstream_rows = "".join(_row(n) for n in downstream_nodes)
 
@@ -1362,6 +1362,40 @@ def _render_vc_panel(graph_data: dict | None) -> str:
     </table>
   </div>
   {down_section}
+  <div id="vc-row-tip" style="
+    display:none;position:fixed;z-index:200;
+    background:var(--surface-hi);border:1px solid var(--border);
+    color:var(--text);font-family:var(--font-m);font-size:.7rem;
+    padding:.5rem .75rem;border-radius:4px;max-width:380px;
+    line-height:1.5;pointer-events:none;white-space:normal;
+    box-shadow:0 4px 16px rgba(0,0,0,.4);
+  "></div>
+  <script>
+  (function(){{
+    const tip = document.getElementById('vc-row-tip');
+    document.querySelectorAll('.vc-table tbody tr[data-excerpt]').forEach(function(row){{
+      row.style.cursor = 'default';
+      row.addEventListener('mouseenter', function(ev){{
+        const exc = row.getAttribute('data-excerpt');
+        if (!exc) return;
+        tip.textContent = exc;
+        tip.style.display = 'block';
+      }});
+      row.addEventListener('mousemove', function(ev){{
+        const pad = 14;
+        let left = ev.clientX + pad;
+        let top  = ev.clientY - tip.offsetHeight - 8;
+        if (left + tip.offsetWidth > window.innerWidth - 8) left = ev.clientX - tip.offsetWidth - pad;
+        if (top < 8) top = ev.clientY + pad;
+        tip.style.left = left + 'px';
+        tip.style.top  = top  + 'px';
+      }});
+      row.addEventListener('mouseleave', function(){{
+        tip.style.display = 'none';
+      }});
+    }});
+  }})();
+  </script>
 </div>
 """
 
