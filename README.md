@@ -87,6 +87,8 @@ Output is written to `<output>/<SYMBOL>/<AS_OF_DATE>/`.
 
 The Ask tab connects to the local RAG server (`company-research serve`). The command to start it is always visible on the Ask tab with a one-click Copy button.
 
+A sample report for AAPL (`--depth standard`, 2026-06-21) is included at [`AAPL_autodd_sample_report.html`](AAPL_autodd_sample_report.html).
+
 ---
 
 ## Output files
@@ -144,7 +146,7 @@ Value chain pipeline (pipeline_value_chain.py)
     │                        "supplier" → CUSTOMER_OF relationship (downstream)
     ├── VC-4.  Resolve candidates to EDGAR entities
     ├── VC-5.  Build relationship records
-    ├── VC-5b. Product/service extraction (claude-haiku-4-5, ~$0.006/run)
+    ├── VC-5b. Product/service extraction (Haiku 4.5, ~$0.006/run)
     │           Extracts 3–7 word label per relationship from filing excerpt
     ├── VC-6.  Assess dependencies
     ├── VC-7.  Build profit pool stubs
@@ -166,7 +168,7 @@ The reverse EDGAR lookup finds companies that name the target in their own SEC f
 | "Apple Inc. is our **customer**" | `SUPPLIES` | Filer → AAPL (upstream supplier, amber) |
 | "Apple Inc. is our **supplier**" | `CUSTOMER_OF` | AAPL → Filer (downstream customer, teal) |
 
-Each relationship is enriched with a product/service label extracted by `claude-haiku-4-5-20251001` from the filing excerpt, at roughly $0.006 per full run. The label and the raw filing sentence are both surfaced in the HTML report (hover any table row to see the source).
+Each relationship is enriched with a product/service label extracted by Haiku 4.5 from the filing excerpt, at roughly $0.006 per full run. The label and the raw filing sentence are both surfaced in the HTML report (hover any table row to see the source).
 
 ---
 
@@ -212,24 +214,37 @@ All LLM calls use Claude models via the Anthropic API. EDGAR, DuckDuckGo, IR pag
 
 **Baseline: AAPL `--depth quick`** (measured run, 2026-06-16)
 
-| Step | Model | Calls | Input tokens | Output tokens | Cost |
-|---|---|---|---|---|---|
-| `extract_facts` | Sonnet 4.6 | 18 | 183,597 | 145,649 | $2.74 |
-| `analyze_section` | Sonnet 4.6 | 17 | 160,719 | 24,945 | $0.86 |
-| `detect_counterevidence` | Sonnet 4.6 | 3 | 118,165 | 5,932 | $0.44 |
-| `synthesize_report` | Sonnet 4.6 | 2 | 12,537 | 11,581 | $0.21 |
-| `extract_products` (VC-5b) | Haiku 4.5 | ~56 | ~5,600 | ~560 | $0.006 |
-| **Total** | | **~96** | **~481K** | **~188K** | **~$4.26** |
+| Step | Model | Calls | Input tokens | Output tokens | Cost | Time |
+|---|---|---|---|---|---|---|
+| `extract_facts` | Haiku 4.5 | 18 | 183,597 | 145,649 | $0.91 | — |
+| `analyze_section` | Sonnet 4.6 | 17 | 160,719 | 24,945 | $0.86 | — |
+| `detect_counterevidence` | Haiku 4.5 | 3 | 118,165 | 5,932 | $0.15 | — |
+| `synthesize_report` | Sonnet 4.6 | 2 | 12,537 | 11,581 | $0.21 | — |
+| `extract_products` (VC-5b) | Haiku 4.5 | ~56 | ~5,600 | ~560 | $0.006 | — |
+| **Total** | | **~96** | **~481K** | **~188K** | **~$2.13** | — |
 
-Pricing used: Sonnet 4.6 at $3.00/M input + $15.00/M output; Haiku 4.5 at $0.80/M input + $4.00/M output.
+**AAPL `--depth standard`** (measured run, 2026-06-21)
+
+| Step | Model | Time |
+|---|---|---|
+| Source fetch + parse | — | 0.7 min |
+| `extract_facts` (14 sections, 628 facts) | Haiku 4.5 | 10.6 min |
+| `detect_counterevidence` | Haiku 4.5 | 0.2 min |
+| `analyze_section` (14 sections) | Sonnet 4.6 | 19.9 min |
+| `synthesize_report` | Sonnet 4.6 | 4.0 min |
+| **Total** | | **~35 min / ~$3** |
+
+Pricing used: Sonnet 4.6 at $3.00/M input + $15.00/M output; Haiku 4.5 at $1.00/M input + $5.00/M output.
+
+The extraction model defaults to Haiku 4.5 and can be overridden via `COMPANY_RESEARCH_EXTRACTION_MODEL`. The reasoning model (section analysis, report synthesis) can be overridden via `COMPANY_RESEARCH_MODEL`.
 
 **Scaling by depth**
 
-- `--depth quick`: ~$4–5 (measured above; web search disabled, fewer sources)
-- `--depth standard`: ~$8–12 (web search + product pages add more chunks → more `extract_facts` calls)
-- `--depth deep`: ~$15–25 (maximum sources, peer LLM ranking, additional peer filings)
+- `--depth quick`: ~$2–3, ~20 min (web search disabled, fewer sources)
+- `--depth standard`: ~$3–4, ~35 min (measured above; web search + product pages, `rag_top_k=12` caps per-call token volume)
+- `--depth deep`: ~$5–8, ~60 min (maximum sources, peer LLM ranking, additional peer filings)
 
-The dominant cost driver is `extract_facts` — it scales with the number of source chunks indexed. Each additional source (IR page, web search result, peer filing) adds roughly 8–15K input tokens to the extraction pass.
+The dominant cost driver is `extract_facts` — it scales with the number of source chunks indexed. Each additional source (IR page, web search result, per filing) adds roughly 8–15K input tokens to the extraction pass.
 
 ---
 

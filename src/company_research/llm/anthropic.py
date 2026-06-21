@@ -25,16 +25,18 @@ class AnthropicProvider:
 
     def __init__(self, model_id: str | None = None, log_dir: Path | None = None) -> None:
         self.model_id = model_id or settings.model_id
+        self._extraction_model_id = settings.extraction_model_id
         self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         self._call_log: Path | None = None
         if log_dir is not None:
             self._call_log = Path(log_dir) / "llm_calls.jsonl"
             self._call_log.parent.mkdir(parents=True, exist_ok=True)
 
-    def _call(self, prompt: str, call_type: str = "unknown", extra: dict | None = None) -> str:
-        log.debug("API call → model=%s call_type=%s prompt_chars=%d", self.model_id, call_type, len(prompt))
+    def _call(self, prompt: str, call_type: str = "unknown", extra: dict | None = None, model: str | None = None) -> str:
+        effective_model = model or self.model_id
+        log.debug("API call → model=%s call_type=%s prompt_chars=%d", effective_model, call_type, len(prompt))
         response = self._client.messages.create(
-            model=self.model_id,
+            model=effective_model,
             max_tokens=_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -48,7 +50,7 @@ class AnthropicProvider:
             entry: dict[str, Any] = {
                 "ts": datetime.utcnow().isoformat(),
                 "call_type": call_type,
-                "model": self.model_id,
+                "model": effective_model,
                 "prompt_chars": len(prompt),
                 "prompt": prompt,
                 "input_tokens": usage.input_tokens,
@@ -95,7 +97,7 @@ class AnthropicProvider:
         )
 
         raw_facts: list[dict] = call_with_retry(
-            call_fn=lambda p: self._call(p, call_type="extract_facts", extra={"topic": topic}),
+            call_fn=lambda p: self._call(p, call_type="extract_facts", extra={"topic": topic}, model=self._extraction_model_id),
             repair_fn=self._repair,
             prompt=prompt,
             model_class=None,
@@ -125,7 +127,7 @@ class AnthropicProvider:
 
         log.info(
             "extract_facts topic=%s → %d facts from %d chunks (model=%s)",
-            topic, len(all_facts), len(chunks), self.model_id,
+            topic, len(all_facts), len(chunks), self._extraction_model_id,
         )
         return all_facts
 
@@ -201,7 +203,7 @@ class AnthropicProvider:
         prompt = prompts.load("detect_counterevidence", facts_json=facts_json)
 
         raw_list: list[dict] = call_with_retry(
-            call_fn=lambda p: self._call(p, call_type="detect_counterevidence"),
+            call_fn=lambda p: self._call(p, call_type="detect_counterevidence", model=self._extraction_model_id),
             repair_fn=self._repair,
             prompt=prompt,
             model_class=None,
