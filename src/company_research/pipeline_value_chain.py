@@ -171,12 +171,23 @@ def run_value_chain(
 
     # VC-9: graph assembly
     log.info("VC-9: Assembling value chain graph")
+    # Pre-fetch evidence excerpts so they can be embedded in graph edges for tooltips
+    evidence_map: dict[str, str] = {}
+    with db._conn() as conn:
+        for rel in relationships:
+            row = conn.execute(
+                "SELECT excerpt FROM vc_relationship_evidence WHERE relationship_id=? LIMIT 1",
+                (rel.relationship_id,),
+            ).fetchone()
+            if row and row[0]:
+                evidence_map[rel.relationship_id] = row[0]
     graph = build_graph(
         run_id=run_id,
         symbol=symbol.upper(),
         as_of=as_of,
         relationships=relationships,
         entities=entities,
+        evidence_map=evidence_map,
     )
     export_graph(graph, out_dir)
 

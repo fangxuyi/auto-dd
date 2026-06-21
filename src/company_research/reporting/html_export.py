@@ -527,10 +527,10 @@ cite.cit:hover::after { opacity:1 }
   position:absolute;pointer-events:none;
   background:var(--surface-hi);border:1px solid var(--border);
   color:var(--text);font-family:var(--font-m);font-size:.7rem;
-  padding:.4rem .7rem;border-radius:4px;
+  padding:.5rem .75rem;border-radius:4px;
   opacity:0;transition:opacity .12s;
-  max-width:220px;line-height:1.4;
-  white-space:nowrap;z-index:100;
+  max-width:320px;line-height:1.5;
+  white-space:normal;z-index:100;
 }
 .vc-graph-legend {
   position:absolute;bottom:1rem;left:1rem;
@@ -897,6 +897,7 @@ function initGraph() {{
         confidence: e.confidence,
         product: e.product_or_service || '',
         materiality: e.materiality || 'unknown',
+        excerpt: e.source_excerpt || '',
         isDn: isDn,
       }};
     }});
@@ -942,6 +943,29 @@ function initGraph() {{
     .attr('stroke', d => d.isDn ? 'rgba(100,210,200,.3)' : 'rgba(196,150,42,.3)')
     .attr('stroke-width', d => matWidth[d.materiality] || 1)
     .attr('marker-end', d => d.isDn ? 'url(#arrowhead-dn)' : 'url(#arrowhead)');
+
+  // Invisible wide hit-zone lines for easy edge hover
+  const linkHit = svg.append('g')
+    .selectAll('line').data(links).join('line')
+    .attr('stroke', 'transparent')
+    .attr('stroke-width', 14)
+    .attr('cursor', 'crosshair');
+
+  linkHit
+    .on('mousemove', (event, d) => {{
+      const x = event.offsetX, y = event.offsetY;
+      const srcName = (typeof d.source === 'object' ? d.source : nodeById[d.source])?.entity_name || '';
+      const tgtName = (typeof d.target === 'object' ? d.target : nodeById[d.target])?.entity_name || '';
+      const relLabel = (d.type || '').replace(/_/g, ' ');
+      let html = `<strong>${{srcName}}</strong><span style="color:var(--text-3)"> → ${{relLabel}} → </span><strong>${{tgtName}}</strong>`;
+      if (d.product) html += `<br/><span style="color:var(--gold-l)">Product: ${{d.product}}</span>`;
+      if (d.excerpt) html += `<br/><span style="color:var(--text-3);font-size:.8em;display:block;margin-top:4px;line-height:1.4">${{d.excerpt.slice(0,200)}}${{d.excerpt.length > 200 ? '…' : ''}}</span>`;
+      tip.style('opacity', 1)
+        .style('left', (x + 14) + 'px')
+        .style('top',  (y - 32) + 'px')
+        .html(html);
+    }})
+    .on('mouseleave', () => tip.style('opacity', 0));
 
   const nodeSel = svg.append('g')
     .selectAll('g').data(allNodes).join('g')
@@ -1005,9 +1029,11 @@ function initGraph() {{
     .text(d => d.product.length > 14 ? d.product.slice(0, 14) + '…' : d.product);
 
   sim.on('tick', () => {{
-    linkSel
+    const setLine = sel => sel
       .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
       .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    setLine(linkSel);
+    setLine(linkHit);
     nodeSel.attr('transform', d => `translate(${{d.x}},${{d.y}})`);
     linkLabels
       .attr('x', d => (d.source.x + d.target.x) / 2)

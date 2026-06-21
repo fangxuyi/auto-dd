@@ -232,6 +232,7 @@ class GraphEdge(BaseModel):
     end_date: date | None = None
     source_ids: list[str] = Field(default_factory=list)
     last_verified_date: date | None = None
+    source_excerpt: str | None = None
 
 
 class ValueChainGraph(BaseModel):
