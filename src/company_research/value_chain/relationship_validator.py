@@ -54,8 +54,32 @@ def validate_reverse_candidates(
 
     validated: list[EntityCandidate] = []
     dropped = 0
+    pre_dropped = 0
 
+    # Drop candidates with synthetic excerpts before LLM validation.
+    # A synthetic excerpt means _fetch_filing_excerpt found no match in the filing's
+    # main document — the FTS hit was likely in an exhibit we can't fetch, or the
+    # filing uses a short form of the company name we didn't search for.
+    # Without real text evidence we cannot confirm the relationship, so we drop
+    # rather than let the LLM guess from company names alone.
+    real_candidates: list[EntityCandidate] = []
     for candidate in candidates:
+        if "mentioning" in (candidate.source_excerpt or ""):
+            pre_dropped += 1
+            log.debug(
+                "VC validate SKIP (no real excerpt)  %s → %s",
+                candidate.normalized_name, target_name,
+            )
+        else:
+            real_candidates.append(candidate)
+
+    if pre_dropped:
+        log.info(
+            "validate_reverse_candidates: pre-dropped %d synthetic-excerpt candidates for '%s'",
+            pre_dropped, target_name,
+        )
+
+    for candidate in real_candidates:
         filer_name = candidate.normalized_name
         # Try to extract ticker from source_id (edgar_reverse:CIK) or raw_name
         filer_ticker = ""
@@ -103,7 +127,7 @@ def validate_reverse_candidates(
             validated.append(candidate)
 
     log.info(
-        "validate_reverse_candidates: kept %d / %d for '%s' (dropped %d)",
-        len(validated), len(candidates), target_name, dropped,
+        "validate_reverse_candidates: kept %d / %d for '%s' (pre-dropped %d synthetic, LLM-dropped %d)",
+        len(validated), len(candidates), target_name, pre_dropped, dropped,
     )
     return validated
