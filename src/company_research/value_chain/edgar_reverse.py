@@ -106,10 +106,12 @@ def discover_reverse_mentions(
         company_name, "/".join(forms), start_dt, end_dt,
     )
 
-    # Two passes: once for "customer" context, once for "supplier" context
+    # Two passes:
+    #   "customer" → filer names target as customer → filer supplies TO target (SUPPLIES)
+    #   "supplier" → filer names target as supplier → filer is downstream customer OF target (CUSTOMER_OF)
     queries = [
         (f'"{company_name}" "customer"', "SUPPLIES"),
-        (f'"{company_name}" "revenue"', "SUPPLIES"),
+        (f'"{company_name}" "supplier"', "CUSTOMER_OF"),
     ]
 
     seen_ciks: set[str] = set()
@@ -149,9 +151,10 @@ def discover_reverse_mentions(
 
                 file_date = src.get("file_date", "")
                 form = src.get("form", "")
+                ctx_phrase = "as a customer" if rel_type == "SUPPLIES" else "as a supplier"
                 excerpt = (
                     f"{filer_name} ({ticker}) filed {form} ({file_date}) "
-                    f"mentioning '{company_name}' as a customer/revenue source"
+                    f"mentioning '{company_name}' {ctx_phrase}"
                 )
 
                 candidate = EntityCandidate(
