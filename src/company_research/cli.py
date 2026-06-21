@@ -486,13 +486,14 @@ def serve_cmd(ctx: click.Context, report_md: str, port: int, no_browser: bool) -
 
 @cli.command("research")
 @click.argument("symbol")
-@click.option("--depth", default="quick", type=click.Choice(["quick", "standard", "deep"]))
+@click.option("--depth", default="standard", type=click.Choice(["quick", "standard", "deep"]))
 @click.option("--as-of", "as_of", default=None, help="Analysis date (YYYY-MM-DD). Defaults to today.")
 @click.option("--lookback-years", "lookback_years", default=5, type=int)
 @click.option("--output", "output_dir", default="./research", type=click.Path())
+@click.option("--rag-top-k", "rag_top_k", default=None, type=int, help="Override profile rag_top_k (chunks per section).")
 @click.option("--port", default=7234, help="RAG server port.")
 @click.option("--no-value-chain", "skip_vc", is_flag=True, help="Skip value chain step.")
-@click.option("--no-serve", "skip_serve", is_flag=True, help="Don't start RAG server after generating HTML.")
+@click.option("--no-serve", "skip_serve", is_flag=True, help="Generate HTML but don't start the RAG server.")
 @click.pass_context
 def research_cmd(
     ctx: click.Context,
@@ -501,6 +502,7 @@ def research_cmd(
     as_of: str | None,
     lookback_years: int,
     output_dir: str,
+    rag_top_k: int | None,
     port: int,
     skip_vc: bool,
     skip_serve: bool,
@@ -509,7 +511,8 @@ def research_cmd(
 
     \b
     Example:
-        company-research research AAPL --depth quick
+        company-research research AAPL
+        company-research research AAPL --depth deep --no-serve
     """
     import time
     import webbrowser
@@ -525,10 +528,11 @@ def research_cmd(
     as_of_date = date.fromisoformat(as_of) if as_of else date.today()
     out = Path(output_dir)
     out_dir = out / symbol.upper() / as_of_date.isoformat()
+    total_steps = 3 if skip_serve else 4
 
     # ── Step 1: Analyze ──────────────────────────────────────────────────────
     console.print(
-        f"\n[bold cyan]╔══ Step 1/3 — Analyze[/bold cyan] "
+        f"\n[bold cyan]╔══ Step 1/{total_steps} — Analyze[/bold cyan] "
         f"[cyan]{symbol.upper()}[/cyan] | depth={depth} | as-of={as_of_date}"
     )
     try:
@@ -538,6 +542,7 @@ def research_cmd(
             as_of=as_of_date,
             lookback_years=lookback_years,
             output_root=out,
+            rag_top_k=rag_top_k,
             dry_run=False,
         )
         console.print(f"[green]✓[/green] Analysis complete → {out_dir}")
@@ -547,7 +552,7 @@ def research_cmd(
 
     # ── Step 2: Value chain ──────────────────────────────────────────────────
     if not skip_vc:
-        console.print(f"\n[bold cyan]╠══ Step 2/3 — Value Chain[/bold cyan] {symbol.upper()}")
+        console.print(f"\n[bold cyan]╠══ Step 2/{total_steps} — Value Chain[/bold cyan] {symbol.upper()}")
         try:
             result = run_value_chain(
                 symbol=symbol,
@@ -562,31 +567,33 @@ def research_cmd(
         except Exception as e:
             console.print(f"[yellow]⚠ Value chain failed (continuing):[/yellow] {e}")
     else:
-        console.print("\n[dim]╠══ Step 2/3 — Value Chain (skipped)[/dim]")
+        console.print(f"\n[dim]╠══ Step 2/{total_steps} — Value Chain (skipped)[/dim]")
 
     # ── Step 3: HTML ─────────────────────────────────────────────────────────
-    console.print(f"\n[bold cyan]╠══ Step 3/3 — HTML[/bold cyan]")
-    md_path   = out_dir / "report.md"
+    console.print(f"\n[bold cyan]╠══ Step 3/{total_steps} — HTML[/bold cyan]")
+    md_path = out_dir / "report.md"
     html_path = convert(md_path, qa_port=port)
     console.print(f"[green]✓[/green] HTML → {html_path}")
 
-    console.print(f"\n[bold green]╚══ Done.[/bold green] {symbol.upper()} · {as_of_date}")
-    console.print(f"    Report : {md_path}")
-    console.print(f"    HTML   : {html_path}")
-
+    # ── Step 4: Serve ────────────────────────────────────────────────────────
     if skip_serve:
+        console.print(f"\n[bold green]╚══ Done.[/bold green] {symbol.upper()} · {as_of_date}")
+        console.print(f"    Report : {md_path}")
+        console.print(f"    HTML   : {html_path}")
         console.print(
-            f"\n[dim]To enable Q&A:[/dim] "
+            f"\n[dim]To start Q&A:[/dim] "
             f"[bold]company-research serve {md_path} --port {port}[/bold]"
         )
+        webbrowser.open(html_path.resolve().as_uri())
         return
 
-    # ── Serve ────────────────────────────────────────────────────────────────
-    console.print(f"\n[bold]Starting RAG server on port {port}…[/bold]")
+    console.print(f"\n[bold cyan]╚══ Step 4/{total_steps} — Serve[/bold cyan]")
     server = RagServer(run_dir=out_dir, symbol=symbol, port=port)
     server.start_background()
-    console.print(f"[green]✓[/green] Server at [bold]http://127.0.0.1:{port}[/bold]")
-    console.print("Press [bold]Ctrl-C[/bold] to stop.\n")
+    console.print(f"[green]✓[/green] RAG server at [bold]http://127.0.0.1:{port}[/bold]")
+    console.print(f"    Report : {md_path}")
+    console.print(f"    HTML   : {html_path}")
+    console.print("\nPress [bold]Ctrl-C[/bold] to stop.\n")
 
     time.sleep(0.4)
     webbrowser.open(html_path.resolve().as_uri())
