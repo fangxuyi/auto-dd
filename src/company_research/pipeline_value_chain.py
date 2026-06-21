@@ -16,6 +16,7 @@ from company_research.value_chain.discovery import discover_from_sources
 from company_research.value_chain.edgar_reverse import discover_reverse_mentions
 from company_research.value_chain.graph import build_graph, export_graph
 from company_research.value_chain.product_extraction import extract_products
+from company_research.value_chain.relationship_validator import validate_reverse_candidates
 from company_research.value_chain.profit_pools import build_profit_pools
 from company_research.value_chain.relationships import build_relationships
 from company_research.value_chain.reporting import write_value_chain_report
@@ -122,11 +123,19 @@ def run_value_chain(
         db=db,
         target_cik=company.cik,
     )
+
+    # VC-3c: validate reverse candidates — filter out competitors, unrelated industries, etc.
+    log.info("VC-3c: Validating %d reverse candidates via LLM", len(reverse_candidates))
+    reverse_candidates = validate_reverse_candidates(
+        candidates=reverse_candidates,
+        target_name=company.issuer_name,
+    )
+
     for c in reverse_candidates:
         db.upsert_vc_candidate(c)
     candidates.extend(reverse_candidates)
     log.info(
-        "Total candidates after reverse lookup: %d (%d forward + %d reverse)",
+        "Total candidates after reverse lookup + validation: %d (%d forward + %d reverse)",
         len(candidates), len(candidates) - len(reverse_candidates), len(reverse_candidates),
     )
 
