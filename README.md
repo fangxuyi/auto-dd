@@ -206,6 +206,33 @@ Each relationship is enriched with a product/service label extracted by `claude-
 
 ---
 
+## Estimated cost per run
+
+All LLM calls use Claude models via the Anthropic API. EDGAR, DuckDuckGo, IR pages, and product pages are free/public — no cost.
+
+**Baseline: AAPL `--depth quick`** (measured run, 2026-06-16)
+
+| Step | Model | Calls | Input tokens | Output tokens | Cost |
+|---|---|---|---|---|---|
+| `extract_facts` | Sonnet 4.6 | 18 | 183,597 | 145,649 | $2.74 |
+| `analyze_section` | Sonnet 4.6 | 17 | 160,719 | 24,945 | $0.86 |
+| `detect_counterevidence` | Sonnet 4.6 | 3 | 118,165 | 5,932 | $0.44 |
+| `synthesize_report` | Sonnet 4.6 | 2 | 12,537 | 11,581 | $0.21 |
+| `extract_products` (VC-5b) | Haiku 4.5 | ~56 | ~5,600 | ~560 | $0.006 |
+| **Total** | | **~96** | **~481K** | **~188K** | **~$4.26** |
+
+Pricing used: Sonnet 4.6 at $3.00/M input + $15.00/M output; Haiku 4.5 at $0.80/M input + $4.00/M output.
+
+**Scaling by depth**
+
+- `--depth quick`: ~$4–5 (measured above; web search disabled, fewer sources)
+- `--depth standard`: ~$8–12 (web search + product pages add more chunks → more `extract_facts` calls)
+- `--depth deep`: ~$15–25 (maximum sources, peer LLM ranking, additional peer filings)
+
+The dominant cost driver is `extract_facts` — it scales with the number of source chunks indexed. Each additional source (IR page, web search result, peer filing) adds roughly 8–15K input tokens to the extraction pass.
+
+---
+
 ## Development
 
 ```bash
