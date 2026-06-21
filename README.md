@@ -81,9 +81,9 @@ Output is written to `<output>/<SYMBOL>/<AS_OF_DATE>/`.
 | Tab | Contents |
 |---|---|
 | **Report** | Full research report with citations, conclusions, confidence ratings |
-| **Value Chain** | D3 force-directed supply-chain graph + upstream relationship table |
+| **Value Chain** | D3 force-directed graph (amber = upstream suppliers, teal = downstream customers) + split relationship tables with Product/Service, Relationship, Confidence, and Materiality columns. Hover any table row to see the SEC filing reference that sourced the relationship. |
 | **Sources** | All indexed documents with type, publisher, date, and reliability tier |
-| **Ask** | Interactive RAG Q&A panel — type a question, get an evidence-grounded answer |
+| **Ask** | Interactive RAG Q&A panel — type a question, get an evidence-grounded answer with inline citations |
 
 The Ask tab connects to the local RAG server (`company-research serve`). The command to start it is always visible on the Ask tab with a one-click Copy button.
 
@@ -95,8 +95,10 @@ The Ask tab connects to the local RAG server (`company-research serve`). The com
 |---|---|
 | `report.md` | Full research report with citations |
 | `report.html` | Tabbed HTML report (value chain + RAG Q&A) |
-| `value_chain_report.md` | Value chain narrative and relationship table |
-| `value_chain_graph.json` | Graph nodes and edges (embedded in HTML) |
+| `value_chain_report.md` | Value chain narrative and relationship summary |
+| `value_chain_graph.json` | Graph nodes and edges with product/service labels and SEC filing excerpts (embedded in HTML) |
+| `value_chain_nodes.csv` | Node list: ticker, entity name, exchange, country |
+| `value_chain_edges.csv` | Edge list: relationship type, confidence, materiality |
 | `run_flow.json` | Per-step trace: status, timing, metrics |
 | `sources.json` | All sources used in this run |
 | `evidence.jsonl` | Extracted facts with source citations |
@@ -138,18 +140,35 @@ Value chain pipeline (pipeline_value_chain.py)
     ├── VC-2.  Decompose value chain layers (industry template)
     ├── VC-3.  Forward EDGAR discovery (target's own filings)
     ├── VC-3b. Reverse EDGAR lookup ("Apple Inc." mentions in third-party 10-Ks)
+    │           Two queries: "customer" → SUPPLIES relationship
+    │                        "supplier" → CUSTOMER_OF relationship (downstream)
     ├── VC-4.  Resolve candidates to EDGAR entities
     ├── VC-5.  Build relationship records
+    ├── VC-5b. Product/service extraction (claude-haiku-4-5, ~$0.006/run)
+    │           Extracts 3–7 word label per relationship from filing excerpt
     ├── VC-6.  Assess dependencies
     ├── VC-7.  Build profit pool stubs
     ├── VC-8.  Identify chokepoints
-    ├── VC-9.  Assemble graph → value_chain_graph.json
+    ├── VC-9.  Assemble graph → value_chain_graph.json (includes source_excerpt per edge)
     └── VC-10. Write value_chain_report.md
 
 Reporting
     ├── html_export.py  convert()  → self-contained 4-tab HTML
     └── serve.py        RagServer  → GET /health, POST /ask (VectorStore + Claude)
 ```
+
+### Value chain relationships
+
+The reverse EDGAR lookup finds companies that name the target in their own SEC filings:
+
+| Filing says… | Relationship | Direction in graph |
+|---|---|---|
+| "Apple Inc. is our **customer**" | `SUPPLIES` | Filer → AAPL (upstream supplier, amber) |
+| "Apple Inc. is our **supplier**" | `CUSTOMER_OF` | AAPL → Filer (downstream customer, teal) |
+
+Each relationship is enriched with a product/service label extracted by `claude-haiku-4-5-20251001` from the filing excerpt, at roughly $0.006 per full run. The label and the raw filing sentence are both surfaced in the HTML report (hover any table row to see the source).
+
+---
 
 ### Source reliability tiers
 
