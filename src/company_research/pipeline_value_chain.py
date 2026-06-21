@@ -131,7 +131,7 @@ def run_value_chain(
 
     # VC-4: resolve candidates to public entities (exact ticker + fuzzy name fallback)
     log.info("VC-4: Resolving candidates to EDGAR entities")
-    resolved_pairs = resolve_candidates(candidates, db, max_resolve=80)
+    resolved_pairs = resolve_candidates(candidates, db, max_resolve=200)
     resolved_count = sum(1 for _, e in resolved_pairs if e is not None)
     log.info("Resolved %d / %d candidates", resolved_count, len(resolved_pairs))
 

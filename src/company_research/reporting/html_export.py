@@ -579,6 +579,12 @@ cite.cit:hover::after { opacity:1 }
 .vc-badge.medium { background:var(--blue-d);color:var(--blue-l);border:1px solid rgba(74,132,196,.25) }
 .vc-badge.high   { background:var(--green-d);color:var(--green-l);border:1px solid rgba(58,158,114,.25) }
 .vc-badge.low    { background:var(--amber-d);color:var(--amber-l);border:1px solid rgba(212,144,10,.25) }
+.vc-badge.mat-critical    { background:rgba(196,50,50,.2);color:#f87171;border:1px solid rgba(196,50,50,.3) }
+.vc-badge.mat-significant { background:rgba(196,150,42,.15);color:var(--gold-l);border:1px solid rgba(196,150,42,.25) }
+.vc-badge.mat-moderate    { background:var(--blue-d);color:var(--blue-l);border:1px solid rgba(74,132,196,.25) }
+.vc-badge.mat-minor       { background:var(--surface-hi);color:var(--text-3);border:1px solid var(--border) }
+.vc-badge.mat-unknown     { background:var(--surface-hi);color:var(--text-3);border:1px solid var(--border) }
+.vc-table td.rel-type     { font-family:var(--font-m);font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-2) }
 
 /* ── sources panel ── */
 .sources-wrap {
@@ -866,21 +872,34 @@ function initGraph() {{
   const container = document.getElementById('vc-graph');
   if (!container) return;
 
+  const DOWNSTREAM_TYPES = new Set(['CUSTOMER_OF', 'DISTRIBUTES', 'RESELLS', 'LICENSES_TO']);
+  const rawEdges = window.GRAPH_DATA.edges;
+  const downstreamNodeIds = new Set(
+    rawEdges.filter(e => DOWNSTREAM_TYPES.has(e.relationship_type)).map(e => e.source_node_id)
+  );
+
   const allNodes = window.GRAPH_DATA.nodes.map(n => ({{
     ...n,
     isTarget: (n.ticker || '').toUpperCase() === SYMBOL.toUpperCase(),
+    isDownstream: downstreamNodeIds.has(n.node_id),
   }}));
   const nodeById = {{}};
   allNodes.forEach(n => nodeById[n.node_id] = n);
 
-  const links = window.GRAPH_DATA.edges
+  const links = rawEdges
     .filter(e => nodeById[e.source_node_id] && nodeById[e.target_node_id])
-    .map(e => ({{
-      source: e.source_node_id,
-      target: e.target_node_id,
-      type: e.relationship_type,
-      confidence: e.confidence,
-    }}));
+    .map(e => {{
+      const isDn = DOWNSTREAM_TYPES.has(e.relationship_type);
+      return {{
+        source: isDn ? e.target_node_id : e.source_node_id,
+        target: isDn ? e.source_node_id : e.target_node_id,
+        type: e.relationship_type,
+        confidence: e.confidence,
+        product: e.product_or_service || '',
+        materiality: e.materiality || 'unknown',
+        isDn: isDn,
+      }};
+    }});
 
   const rect = container.getBoundingClientRect();
   const W = rect.width || 900;
@@ -890,13 +909,21 @@ function initGraph() {{
     .attr('viewBox', `0 0 ${{W}} ${{H}}`)
     .attr('preserveAspectRatio', 'xMidYMid meet');
 
-  // Arrow marker
-  svg.append('defs').append('marker')
+  // Arrow markers — upstream (amber) and downstream (teal)
+  const defs = svg.append('defs');
+  defs.append('marker')
     .attr('id', 'arrowhead').attr('viewBox', '0 -4 8 8')
     .attr('refX', 20).attr('refY', 0)
     .attr('markerWidth', 5).attr('markerHeight', 5)
     .attr('orient', 'auto')
-    .append('path').attr('fill', 'rgba(196,150,42,.45)')
+    .append('path').attr('fill', 'rgba(196,150,42,.55)')
+    .attr('d', 'M0,-4L8,0L0,4');
+  defs.append('marker')
+    .attr('id', 'arrowhead-dn').attr('viewBox', '0 -4 8 8')
+    .attr('refX', 20).attr('refY', 0)
+    .attr('markerWidth', 5).attr('markerHeight', 5)
+    .attr('orient', 'auto')
+    .append('path').attr('fill', 'rgba(100,210,200,.55)')
     .attr('d', 'M0,-4L8,0L0,4');
 
   const sim = d3.forceSimulation(allNodes)
@@ -909,11 +936,12 @@ function initGraph() {{
   const target = allNodes.find(n => n.isTarget);
   if (target) {{ target.fx = W / 2; target.fy = H / 2; }}
 
+  const matWidth = {{ critical: 3.5, significant: 2.5, moderate: 1.5, minor: 1, unknown: 1 }};
   const linkSel = svg.append('g')
     .selectAll('line').data(links).join('line')
-    .attr('stroke', 'rgba(196,150,42,.2)')
-    .attr('stroke-width', 1)
-    .attr('marker-end', 'url(#arrowhead)');
+    .attr('stroke', d => d.isDn ? 'rgba(100,210,200,.3)' : 'rgba(196,150,42,.3)')
+    .attr('stroke-width', d => matWidth[d.materiality] || 1)
+    .attr('marker-end', d => d.isDn ? 'url(#arrowhead-dn)' : 'url(#arrowhead)');
 
   const nodeSel = svg.append('g')
     .selectAll('g').data(allNodes).join('g')
@@ -921,8 +949,8 @@ function initGraph() {{
 
   nodeSel.append('circle')
     .attr('r', d => d.isTarget ? 26 : 15)
-    .attr('fill', d => d.isTarget ? 'var(--gold)' : 'var(--surface-hi)')
-    .attr('stroke', d => d.isTarget ? 'var(--gold-l)' : 'var(--border)')
+    .attr('fill', d => d.isTarget ? 'var(--gold)' : d.isDownstream ? 'rgba(100,210,200,.12)' : 'var(--surface-hi)')
+    .attr('stroke', d => d.isTarget ? 'var(--gold-l)' : d.isDownstream ? 'rgba(100,210,200,.5)' : 'var(--border)')
     .attr('stroke-width', d => d.isTarget ? 2 : 1);
 
   nodeSel.append('text')
@@ -933,15 +961,27 @@ function initGraph() {{
     .attr('font-family', 'var(--font-m)')
     .attr('pointer-events', 'none');
 
-  // Tooltip
+  // Tooltip — entity name, ticker, relationship type, product, materiality
   const tip = d3.select(container).append('div').attr('class', 'vc-tooltip');
   nodeSel
     .on('mousemove', (event, d) => {{
       const x = event.offsetX, y = event.offsetY;
+      const edge = links.find(l => {{
+        const s = typeof l.source === 'object' ? l.source.node_id : l.source;
+        const t = typeof l.target === 'object' ? l.target.node_id : l.target;
+        return s === d.node_id || t === d.node_id;
+      }});
+      let tipHtml = `<strong>${{d.entity_name}}</strong><br/>${{d.ticker || ''}}`;
+      if (!d.isTarget && edge) {{
+        const relLabel = (edge.type || '').replace(/_/g, ' ');
+        if (relLabel) tipHtml += `<br/><em style="color:var(--text-3)">${{relLabel}}</em>`;
+        if (edge.product) tipHtml += `<br/>Product: ${{edge.product}}`;
+        if (edge.materiality && edge.materiality !== 'unknown') tipHtml += `<br/>Materiality: ${{edge.materiality}}`;
+      }}
       tip.style('opacity', 1)
         .style('left', (x + 14) + 'px')
         .style('top',  (y - 32) + 'px')
-        .html(`<strong>${{d.entity_name}}</strong><br/>${{d.ticker || ''}}`);
+        .html(tipHtml);
     }})
     .on('mouseleave', () => tip.style('opacity', 0));
 
@@ -955,11 +995,23 @@ function initGraph() {{
     }})
   );
 
+  // Product / service labels rendered at edge midpoints
+  const linkLabels = svg.append('g')
+    .selectAll('text').data(links.filter(l => l.product)).join('text')
+    .attr('font-size', '5px')
+    .attr('fill', d => d.isDn ? 'rgba(100,210,200,.75)' : 'rgba(196,150,42,.65)')
+    .attr('text-anchor', 'middle')
+    .attr('pointer-events', 'none')
+    .text(d => d.product.length > 14 ? d.product.slice(0, 14) + '…' : d.product);
+
   sim.on('tick', () => {{
     linkSel
       .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
       .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
     nodeSel.attr('transform', d => `translate(${{d.x}},${{d.y}})`);
+    linkLabels
+      .attr('x', d => (d.source.x + d.target.x) / 2)
+      .attr('y', d => (d.source.y + d.target.y) / 2 - 3);
   }});
 }}
 
@@ -1158,37 +1210,82 @@ def _render_vc_panel(graph_data: dict | None) -> str:
     n_nodes = len(nodes)
     n_edges = len(edges)
 
-    # Relationship table — sort: target node last, rest alpha by name
     target_node_id = next(
         (n["node_id"] for n in nodes if (n.get("ticker") or "").upper() == symbol.upper()),
         None,
     )
-    suppliers = [n for n in nodes if n.get("node_id") != target_node_id]
-    suppliers.sort(key=lambda n: n.get("entity_name", ""))
 
-    # Build edge lookup for confidence
-    edge_conf: dict[str, str] = {}
+    # Full edge metadata lookup keyed by source_node_id
+    DOWNSTREAM_TYPES = {"CUSTOMER_OF", "DISTRIBUTES", "RESELLS", "LICENSES_TO"}
+    edge_by_src: dict[str, dict] = {}
     for e in edges:
-        edge_conf[e.get("source_node_id", "")] = e.get("confidence", "medium")
+        sid = e.get("source_node_id", "")
+        if sid not in edge_by_src:
+            edge_by_src[sid] = e
 
-    rows = ""
-    for n in suppliers:
-        ticker = html.escape(n.get("ticker") or "—")
-        name   = html.escape(n.get("entity_name", ""))
-        conf   = edge_conf.get(n.get("node_id", ""), "medium")
-        conf_e = html.escape(conf)
-        rows += (
-            f'<tr><td class="ticker">{ticker}</td>'
-            f"<td>{name}</td>"
+    # Split non-target nodes into upstream suppliers vs downstream customers
+    upstream_nodes: list[dict] = []
+    downstream_nodes: list[dict] = []
+    for n in nodes:
+        if n.get("node_id") == target_node_id:
+            continue
+        e = edge_by_src.get(n.get("node_id", ""))
+        rel = (e.get("relationship_type") or "") if e else ""
+        if rel in DOWNSTREAM_TYPES:
+            downstream_nodes.append(n)
+        else:
+            upstream_nodes.append(n)
+    upstream_nodes.sort(key=lambda n: n.get("entity_name", ""))
+    downstream_nodes.sort(key=lambda n: n.get("entity_name", ""))
+
+    def _row(n: dict) -> str:
+        nid     = n.get("node_id", "")
+        e       = edge_by_src.get(nid)
+        ticker_t = html.escape(n.get("ticker") or "—")
+        name_t   = html.escape(n.get("entity_name", ""))
+        conf     = (e.get("confidence") or "medium") if e else "medium"
+        conf_e   = html.escape(conf)
+        rel      = (e.get("relationship_type") or "SUPPLIES") if e else "SUPPLIES"
+        rel_e    = html.escape(rel.replace("_", " "))
+        product  = (e.get("product_or_service") or "—") if e else "—"
+        prod_e   = html.escape(str(product))
+        mat      = (e.get("materiality") or "unknown") if e else "unknown"
+        mat_e    = html.escape(mat)
+        return (
+            f'<tr><td class="ticker">{ticker_t}</td>'
+            f"<td>{name_t}</td>"
+            f"<td>{prod_e}</td>"
+            f'<td class="rel-type">{rel_e}</td>'
             f'<td><span class="vc-badge {conf_e}">{conf_e}</span></td>'
-            f"<td>SUPPLIES</td></tr>\n"
+            f'<td><span class="vc-badge mat-{mat_e}">{mat_e}</span></td>'
+            f"</tr>\n"
         )
 
+    upstream_rows   = "".join(_row(n) for n in upstream_nodes)
+    downstream_rows = "".join(_row(n) for n in downstream_nodes)
+
+    down_section = ""
+    if downstream_nodes:
+        down_section = f"""
+  <div class="vc-table-section" style="margin-top:2rem">
+    <div class="vc-table-label">Downstream customers / distributors ({len(downstream_nodes)})</div>
+    <table class="vc-table">
+      <thead>
+        <tr>
+          <th>Ticker</th><th>Company</th><th>Product / Service</th>
+          <th>Relationship</th><th>Confidence</th><th>Materiality</th>
+        </tr>
+      </thead>
+      <tbody>{downstream_rows}</tbody>
+    </table>
+  </div>"""
+
+    sym_e = html.escape(symbol)
     return f"""
 <div class="vc-wrap">
   <div class="vc-section-head">
     <h2>Value Chain</h2>
-    <p>{html.escape(symbol)} supply-chain network · sourced from EDGAR filings</p>
+    <p>{sym_e} supply-chain network · sourced from EDGAR filings</p>
   </div>
   <div class="vc-stats">
     <div class="vc-stat">
@@ -1200,8 +1297,12 @@ def _render_vc_panel(graph_data: dict | None) -> str:
       <span class="vc-stat-key">Confirmed edges</span>
     </div>
     <div class="vc-stat">
-      <span class="vc-stat-val">{len(suppliers)}</span>
-      <span class="vc-stat-key">Suppliers identified</span>
+      <span class="vc-stat-val">{len(upstream_nodes)}</span>
+      <span class="vc-stat-key">Upstream suppliers</span>
+    </div>
+    <div class="vc-stat">
+      <span class="vc-stat-val">{len(downstream_nodes)}</span>
+      <span class="vc-stat-key">Downstream customers</span>
     </div>
   </div>
 
@@ -1209,31 +1310,32 @@ def _render_vc_panel(graph_data: dict | None) -> str:
     <div class="vc-graph-legend">
       <div class="legend-item">
         <div class="legend-dot" style="background:var(--gold)"></div>
-        {html.escape(symbol)}
+        {sym_e}
       </div>
       <div class="legend-item">
         <div class="legend-dot" style="background:var(--surface-hi);border:1px solid var(--border)"></div>
-        Supplier / partner
+        Upstream supplier
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:rgba(100,210,200,.12);border:1px solid rgba(100,210,200,.5)"></div>
+        Downstream customer
       </div>
     </div>
   </div>
 
   <div class="vc-table-section">
-    <div class="vc-table-label">Upstream relationships ({len(suppliers)})</div>
+    <div class="vc-table-label">Upstream suppliers ({len(upstream_nodes)})</div>
     <table class="vc-table">
       <thead>
         <tr>
-          <th>Ticker</th>
-          <th>Company</th>
-          <th>Confidence</th>
-          <th>Relationship</th>
+          <th>Ticker</th><th>Company</th><th>Product / Service</th>
+          <th>Relationship</th><th>Confidence</th><th>Materiality</th>
         </tr>
       </thead>
-      <tbody>
-        {rows}
-      </tbody>
+      <tbody>{upstream_rows}</tbody>
     </table>
   </div>
+  {down_section}
 </div>
 """
 
