@@ -1,6 +1,7 @@
 """EDGAR full-text search — reverse lookup for companies that name the target company."""
 from __future__ import annotations
 
+import html
 import logging
 import re
 import time
@@ -15,29 +16,100 @@ from company_research.storage.database import Database
 log = logging.getLogger(__name__)
 
 _FTS_URL = "https://efts.sec.gov/LATEST/search-index"
+_FILING_BASE = "https://www.sec.gov/Archives/edgar/data"
 _MAX_RATE_SLEEP = 0.12  # EDGAR fair-use: ~8 req/s
+_EXCERPT_WINDOW = 400  # chars around the keyword match to return
 
 # Parse EDGAR display_names format: "Company Name  (TICKER)  (CIK 0000xxxxxxx)"
 _DISPLAY_RE = re.compile(r"^(.*?)\s+\(([A-Z0-9.]+)\)\s+\(CIK\s+(\d+)\)", re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _strip_html(text: str) -> str:
-    return _HTML_TAG_RE.sub("", text).strip()
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = html.unescape(text)
+    return _WHITESPACE_RE.sub(" ", text).strip()
 
 
-def _extract_highlight(hit: dict) -> str:
+def _fetch_filing_excerpt(
+    cik: str,
+    hit_id: str,
+    target_name: str,
+    keyword: str,
+) -> str:
+    """Fetch an EDGAR filing and return a text window containing target_name near keyword.
+
+    hit_id format: "{adsh}:{filename}"  e.g. "0001628280-26-012906:ain-20251231.htm"
+    Returns empty string on failure or if no relevant passage is found.
     """
-    Pull the first non-empty highlight snippet from an EDGAR FTS hit.
-    EDGAR wraps matched terms in <em> tags; we strip them.
-    Returns empty string if no highlight is present.
-    """
-    hl = hit.get("_highlight", {})
-    for key in ("file_date", "period_of_report", "content", "entity_name"):
-        snippets = hl.get(key, [])
-        if snippets:
-            return _strip_html(snippets[0])
-    return ""
+    parts = hit_id.split(":", 1)
+    if len(parts) != 2:
+        return ""
+    adsh, filename = parts
+    adsh_nodash = adsh.replace("-", "")
+    cik_int = str(int(cik))  # strip leading zeros for URL
+    url = f"{_FILING_BASE}/{cik_int}/{adsh_nodash}/{filename}"
+
+    try:
+        time.sleep(_MAX_RATE_SLEEP)
+        chunks: list[bytes] = []
+        total = 0
+        with httpx.stream("GET", url, headers=_headers(), timeout=30) as r:
+            r.raise_for_status()
+            for chunk in r.iter_bytes(chunk_size=16_384):
+                chunks.append(chunk)
+                total += len(chunk)
+
+        raw = b"".join(chunks).decode("utf-8", errors="replace")
+        text = _strip_html(raw)
+        text_lower = text.lower()
+        keyword_lower = keyword.lower()
+
+        # Build search variants: full legal name + first two words (e.g. "micron technology")
+        name_variants = [target_name.lower()]
+        words = target_name.split()
+        if len(words) >= 2:
+            name_variants.append(" ".join(words[:2]).lower())
+
+        # Find the target name occurrence closest to the keyword
+        best_excerpt = ""
+        best_distance = float("inf")
+
+        for target_lower in name_variants:
+            search_from = 0
+            while True:
+                idx = text_lower.find(target_lower, search_from)
+                if idx == -1:
+                    break
+
+                # Look for keyword within ±500 chars of target name
+                window_lo = max(0, idx - 500)
+                window_hi = min(len(text), idx + len(target_lower) + 500)
+                window = text_lower[window_lo:window_hi]
+                kw_pos = window.find(keyword_lower)
+
+                if kw_pos != -1:
+                    distance = abs(kw_pos - (idx - window_lo))
+                    if distance < best_distance:
+                        best_distance = distance
+                        excerpt_lo = max(0, idx - 150)
+                        excerpt_hi = min(len(text), idx + len(target_lower) + _EXCERPT_WINDOW)
+                        best_excerpt = text[excerpt_lo:excerpt_hi].strip()
+
+                search_from = idx + 1
+
+        if best_excerpt:
+            log.debug("Fetched real excerpt for %s from %s (%d bytes read)", target_name, url, total)
+        else:
+            log.debug("No keyword match found in %s (%d bytes read)", url, total)
+
+        return best_excerpt[:500]
+
+    except Exception as exc:
+        log.debug("Failed to fetch filing excerpt from %s: %s", url, exc)
+        return ""
+
 
 
 def _headers() -> dict[str, str]:
@@ -136,12 +208,16 @@ def discover_reverse_mentions(
     seen_ciks: set[str] = set()
     candidates: list[EntityCandidate] = []
 
+    keyword_for_rel = {"SUPPLIES": "customer", "CUSTOMER_OF": "supplier"}
+
     for query, rel_type in queries:
         hits = _fts_search(query=query, forms=forms, start_dt=start_dt, end_dt=end_dt, max_hits=max_results)
+        keyword = keyword_for_rel[rel_type]
 
         for hit in hits:
             src = hit.get("_source", {})
             ciks = src.get("ciks", [])
+            hit_id = hit.get("_id", "")
 
             # Exclude the target company's own filings
             if target_cik_norm and any(c.zfill(10) == target_cik_norm for c in ciks):
@@ -172,11 +248,14 @@ def discover_reverse_mentions(
                 form = src.get("form", "")
                 ctx_phrase = "as a customer" if rel_type == "SUPPLIES" else "as a supplier"
 
-                # Prefer actual filing text from EDGAR FTS highlight over synthetic string
-                hl_text = _extract_highlight(hit)
-                if hl_text:
-                    excerpt = hl_text[:500]
-                else:
+                # Try to fetch a real excerpt from the filing; fall back to synthetic
+                excerpt = _fetch_filing_excerpt(
+                    cik=cik,
+                    hit_id=hit_id,
+                    target_name=company_name,
+                    keyword=keyword,
+                )
+                if not excerpt:
                     excerpt = (
                         f"{filer_name} ({ticker}) filed {form} ({file_date}) "
                         f"mentioning '{company_name}' {ctx_phrase}"
